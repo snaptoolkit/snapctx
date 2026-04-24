@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neargrep"
+version = "0.1.0"
+description = "Fast, structured codebase context for AI agents — symbol graph + lexical search over Python (and more)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "ktrichas" }]
+dependencies = [
+    "pathspec>=0.12",
+    "numpy>=1.26",
+    "fastembed>=0.4",
+    "mcp>=1.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+neargrep = "neargrep.cli:main"
+neargrep-mcp = "neargrep.adapters.mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/neargrep"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,777 @@
+"""The four context-retrieval operations on top of a populated index.
+
+Every function takes a repo root (Path) and returns a JSON-serializable dict.
+The CLI, and future MCP/ADK adapters, wrap these directly.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+from typing import Literal
+
+from neargrep.index import Index, db_path_for
+
+# A response chunk roughly this size — used to decide when to truncate.
+DEFAULT_RESULT_BUDGET = 2000   # tokens, approximate (4 chars ≈ 1 token)
+
+
+# ---------- helpers ----------
+
+
+def _open(root: Path) -> Index:
+    db = db_path_for(root)
+    if not db.exists():
+        raise FileNotFoundError(
+            f"No index at {db}. Run `neargrep index {root}` first."
+        )
+    return Index(db)
+
+
+def _row_to_symbol_dict(row: sqlite3.Row, *, include_body_line_range: bool = True) -> dict:
+    d = {
+        "qname": row["qname"],
+        "kind": row["kind"],
+        "language": row["language"],
+        "signature": row["signature"],
+        "docstring": row["docstring"],
+        "file": row["file"],
+        "parent_qname": row["parent_qname"],
+    }
+    if include_body_line_range:
+        d["lines"] = f"{row['line_start']}-{row['line_end']}"
+    if row["decorators"]:
+        d["decorators"] = row["decorators"].split("\n")
+    return d
+
+
+def _docstring_summary(docstring: str | None) -> str | None:
+    """Return just the first sentence/line of a docstring — sized for search results."""
+    if not docstring:
+        return None
+    first_line = docstring.strip().splitlines()[0]
+    return first_line
+
+
+def _build_fts_query(user_query: str) -> str:
+    """Map a natural-language-ish query into FTS5 MATCH syntax.
+
+    Splits the input into bare tokens and ORs them, so a multi-word query
+    matches any of the terms. FTS5's own tokenizer handles further normalization.
+    """
+    tokens = [t for t in _tokenize_query(user_query) if t]
+    if not tokens:
+        return user_query
+    return " OR ".join(tokens)
+
+
+def _tokenize_query(q: str) -> list[str]:
+    import re
+    return [t for t in re.findall(r"\w+", q.lower()) if t]
+
+
+# ---------- search_code ----------
+
+
+def search_code(
+    query: str,
+    k: int = 5,
+    kind: Literal["function", "method", "class", "module", "interface", "type", "component", "constant"] | None = None,
+    root: str | Path = ".",
+    mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
+) -> dict:
+    """Find symbols whose qname, signature, docstring, or decorators match ``query``.
+
+    ``mode`` selects the ranker:
+      * ``lexical`` — SQLite FTS5 / BM25. Fast, exact-keyword; misses paraphrase.
+      * ``vector``  — cosine similarity over bge-small embeddings of qname +
+        signature + docstring. Best for paraphrased / conceptual queries.
+      * ``hybrid``  — runs both, fuses ranks with Reciprocal Rank Fusion (k=60).
+        Default. Robust: keeps lexical wins while recovering paraphrase hits.
+
+    The response lists up to ``k`` hits, each with qualified name, one-line
+    docstring summary, signature, file path + line range, score, and a
+    suggested ``next_action`` the caller should take (``expand`` the call graph
+    around a seed, ``read_body`` if signature+docstring look insufficient, or
+    ``enough`` when the docstring alone is self-explanatory).
+    """
+    root = Path(root).resolve()
+    idx = _open(root)
+    try:
+        fts_query = _build_fts_query(query)
+        overfetch = k * 3
+        lex_rows = idx.fts_search(fts_query, limit=overfetch, kind=kind) if mode != "vector" else []
+
+        vec_pairs: list[tuple] = []
+        if mode in ("vector", "hybrid"):
+            from neargrep.embeddings import embed_texts
+            qvec = embed_texts([query])[0]
+            vec_pairs = idx.vector_search(qvec, limit=overfetch, kind=kind)
+
+        if mode == "lexical":
+            pairs = [(r, -float(r["score"])) for r in lex_rows][:k]
+        elif mode == "vector":
+            pairs = vec_pairs[:k]
+        else:  # hybrid
+            lex_pairs = [(r, -float(r["score"])) for r in lex_rows]
+            pairs = _rrf_merge(lex_pairs, vec_pairs, limit=k)
+    finally:
+        idx.close()
+
+    results = []
+    for row, score in pairs:
+        d = _row_to_symbol_dict(row)
+        d["docstring"] = _docstring_summary(row["docstring"])
+        d["score"] = round(float(score), 4)
+        d["next_action"] = _suggest_next_action(row)
+        results.append(d)
+
+    return {
+        "query": query,
+        "mode": mode,
+        "results": results,
+        "hint": _search_hint(results),
+    }
+
+
+def _rrf_merge(
+    lexical_pairs,
+    vector_pairs,
+    *,
+    k_fuse: int = 60,
+    limit: int = 5,
+    lex_weight: float = 1.0,
+    vec_weight: float = 1.5,
+    test_penalty: float = 0.6,
+):
+    """Weighted Reciprocal Rank Fusion of two ranked lists of (row, score) tuples.
+
+    Defaults (tuned empirically on the biblereader benchmark):
+      * ``vec_weight=1.5`` — embeddings beat BM25 on identifier-heavy queries
+        because BM25's camel/snake token splits mix real matches with noise.
+      * ``test_penalty=0.6`` — symbols living under a ``tests/`` path or in a
+        module ending in ``.tests`` or starting with ``test_`` get their RRF
+        score multiplied by this factor. Agents almost never want a test as
+        their top hit, but tests still appear (just demoted).
+    """
+    scores: dict[str, float] = {}
+    kept: dict[str, object] = {}
+    for pairs, weight in ((lexical_pairs, lex_weight), (vector_pairs, vec_weight)):
+        for rank, (row, _) in enumerate(pairs, start=1):
+            q = row["qname"]
+            scores[q] = scores.get(q, 0.0) + weight / (k_fuse + rank)
+            kept[q] = row
+    # Apply test-file penalty.
+    for q, row in kept.items():
+        if _looks_like_test(q, row["file"]):
+            scores[q] *= test_penalty
+    ordered = sorted(scores.items(), key=lambda kv: -kv[1])
+    return [(kept[q], s) for q, s in ordered[:limit]]
+
+
+def _looks_like_test(qname: str, file: str) -> bool:
+    return (
+        "/tests/" in file
+        or "/test/" in file
+        or file.endswith("/tests.py")
+        or "tests:" in qname
+        or ":Test" in qname
+        or qname.endswith(".tests")
+    )
+
+
+def _suggest_next_action(row: sqlite3.Row) -> str:
+    if row["kind"] in ("class", "module"):
+        return "outline"
+    if row["docstring"] and len(row["docstring"]) > 40:
+        return "expand"
+    return "read_body"
+
+
+def _search_hint(results: list[dict]) -> str:
+    if not results:
+        return (
+            "No matches. Try synonyms (e.g. 'throttle' instead of 'rate limit'), "
+            "or a different `kind` filter."
+        )
+    top = results[0]
+    qname = top["qname"]
+    if top["next_action"] == "expand":
+        return f"To see callees of the top result, call expand({qname!r})."
+    if top["next_action"] == "outline":
+        return f"To see {qname}'s members, call outline with its file."
+    return f"If the signature isn't enough, call get_source({qname!r})."
+
+
+# ---------- expand ----------
+
+
+def expand(
+    qname: str,
+    direction: Literal["callees", "callers", "both"] = "callees",
+    depth: int = 1,
+    root: str | Path = ".",
+) -> dict:
+    """Walk the call graph from ``qname`` and return neighbor signatures.
+
+    ``direction`` picks which edges to follow:
+      - ``callees``: functions/methods that ``qname`` invokes.
+      - ``callers``: functions/methods that invoke ``qname``.
+      - ``both``: union of the two.
+
+    ``depth`` controls how many hops. At depth 1 you get the immediate
+    neighborhood; at depth 2 you also see what those neighbors call/are-called-by.
+    Returns neighbor **signatures and docstring summaries** only — no bodies —
+    so the caller can decide which ones (if any) need `get_source`.
+    """
+    root = Path(root).resolve()
+    idx = _open(root)
+    try:
+        root_sym = idx.get_symbol(qname)
+        if root_sym is None:
+            return {
+                "qname": qname,
+                "error": "not_found",
+                "hint": f"No symbol named {qname!r}. Call search_code first to find valid qnames.",
+            }
+
+        visited: set[str] = {qname}
+        layers: list[list[dict]] = []
+        frontier: list[str] = [qname]
+
+        for hop in range(1, depth + 1):
+            next_frontier: list[str] = []
+            layer: list[dict] = []
+            for source_qname in frontier:
+                neighbors = _neighbors(idx, source_qname, direction)
+                for neigh_qname, neigh_row, edge_kind, call_line in neighbors:
+                    if neigh_qname in visited:
+                        continue
+                    visited.add(neigh_qname)
+                    next_frontier.append(neigh_qname)
+                    entry = {
+                        "from": source_qname,
+                        "edge": edge_kind,
+                        "line": call_line,
+                    }
+                    if neigh_row is not None:
+                        entry.update(_row_to_symbol_dict(neigh_row))
+                        entry["docstring"] = _docstring_summary(neigh_row["docstring"])
+                    else:
+                        # Unresolved callee — name only.
+                        entry["qname"] = neigh_qname
+                        entry["resolved"] = False
+                    layer.append(entry)
+            layers.append(layer)
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        return {
+            "qname": qname,
+            "root_signature": root_sym["signature"],
+            "direction": direction,
+            "depth": depth,
+            "layers": layers,
+            "hint": _expand_hint(layers),
+        }
+    finally:
+        idx.close()
+
+
+def _neighbors(
+    idx: Index, qname: str, direction: str
+) -> list[tuple[str, sqlite3.Row | None, str, int]]:
+    """Return (neighbor_qname, neighbor_symbol_row_or_None, edge_kind, line) tuples."""
+    out: list[tuple[str, sqlite3.Row | None, str, int]] = []
+    if direction in ("callees", "both"):
+        for row in idx.callees_of(qname):
+            neigh_qname = row["callee_qname"] or f"?:{row['callee_name']}"
+            sym = idx.get_symbol(neigh_qname) if row["callee_qname"] else None
+            out.append((neigh_qname, sym, "callee", row["line"]))
+    if direction in ("callers", "both"):
+        for row in idx.callers_of(qname):
+            neigh_qname = row["caller_qname"]
+            sym = idx.get_symbol(neigh_qname)
+            out.append((neigh_qname, sym, "caller", row["line"]))
+    return out
+
+
+def _expand_hint(layers: list[list[dict]]) -> str:
+    total = sum(len(layer) for layer in layers)
+    if total == 0:
+        return "No neighbors found at the requested depth/direction."
+    unresolved = sum(1 for layer in layers for e in layer if e.get("resolved") is False)
+    if unresolved:
+        return (
+            f"{total} neighbors ({unresolved} unresolved — likely stdlib or dynamic calls). "
+            "Call get_source on a resolved neighbor if you need its body."
+        )
+    return f"{total} neighbors. Call get_source on any one to see its body."
+
+
+# ---------- outline ----------
+
+
+def outline(path: str | Path, root: str | Path = ".") -> dict:
+    """List all symbols defined in a file, nested by parent.
+
+    Accepts an absolute path or a path relative to ``root``. Returns the file's
+    symbol tree in source order, each node carrying its signature, one-line
+    docstring summary, and line range. No bodies.
+
+    Use this instead of reading a whole file when you only need to know what
+    it defines — typically a 10x token savings over ``get_source`` of the file.
+    """
+    root = Path(root).resolve()
+    target = Path(path)
+    if not target.is_absolute():
+        target = (root / target).resolve()
+    file_str = str(target)
+
+    idx = _open(root)
+    try:
+        rows = idx.symbols_in_file(file_str)
+    finally:
+        idx.close()
+
+    if not rows:
+        return {
+            "file": file_str,
+            "symbols": [],
+            "hint": f"No symbols indexed for {file_str}. Did you run `neargrep index` on this root?",
+        }
+
+    by_qname = {row["qname"]: row for row in rows}
+    tree = _nest_symbols(rows, by_qname)
+    return {"file": file_str, "symbols": tree}
+
+
+def _nest_symbols(rows: list[sqlite3.Row], by_qname: dict[str, sqlite3.Row]) -> list[dict]:
+    """Build a tree from a flat list of Symbols ordered by line_start.
+
+    A symbol's children are the symbols whose parent_qname is this symbol's qname.
+    """
+    children_of: dict[str | None, list[sqlite3.Row]] = {}
+    for row in rows:
+        children_of.setdefault(row["parent_qname"], []).append(row)
+
+    def build(row: sqlite3.Row) -> dict:
+        d = _row_to_symbol_dict(row)
+        d["docstring"] = _docstring_summary(row["docstring"])
+        kids = children_of.get(row["qname"], [])
+        if kids:
+            d["children"] = [build(k) for k in kids]
+        return d
+
+    # Roots are rows whose parent_qname is None, or whose parent isn't in this file.
+    roots = [r for r in rows if r["parent_qname"] is None or r["parent_qname"] not in by_qname]
+    return [build(r) for r in roots]
+
+
+# ---------- get_source ----------
+
+
+def get_source(
+    qname: str,
+    with_neighbors: bool = False,
+    root: str | Path = ".",
+) -> dict:
+    """Return the full source of a symbol, and optionally the signatures of what it calls.
+
+    ``with_neighbors=True`` appends a compact list of this symbol's resolved
+    callees (signature + docstring summary only), so the caller can reason
+    about the dependency context without a follow-up round-trip.
+    """
+    root = Path(root).resolve()
+    idx = _open(root)
+    try:
+        row = idx.get_symbol(qname)
+        if row is None:
+            return {
+                "qname": qname,
+                "error": "not_found",
+                "hint": f"No symbol {qname!r} in index.",
+            }
+
+        path = Path(row["file"])
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as e:
+            return {"qname": qname, "error": f"read_failed: {e}"}
+
+        body = "\n".join(lines[row["line_start"] - 1 : row["line_end"]])
+
+        result = {
+            "qname": qname,
+            "signature": row["signature"],
+            "file": row["file"],
+            "lines": f"{row['line_start']}-{row['line_end']}",
+            "source": body,
+        }
+
+        if with_neighbors:
+            callees = []
+            for call_row in idx.callees_of(qname):
+                if not call_row["callee_qname"]:
+                    continue
+                neigh = idx.get_symbol(call_row["callee_qname"])
+                if neigh is None:
+                    continue
+                callees.append(
+                    {
+                        "qname": neigh["qname"],
+                        "signature": neigh["signature"],
+                        "docstring": _docstring_summary(neigh["docstring"]),
+                    }
+                )
+            result["callees"] = callees
+
+        return result
+    finally:
+        idx.close()
+
+
+# ---------- context: one-shot retrieval ----------
+
+
+def context(
+    query: str,
+    *,
+    k_seeds: int = 5,
+    source_for_top: int = 5,
+    expand_depth: int = 1,
+    neighbor_limit: int = 8,
+    body_char_cap: int = 2000,
+    mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
+    kind: str | None = None,
+    root: str | Path = ".",
+) -> dict:
+    """Gather everything an agent needs about ``query`` in one call.
+
+    Runs ``search_code`` → ``expand(both)`` → ``get_source`` under the hood and
+    returns a single self-contained payload. Designed for agents that want to
+    minimize tool-call round trips at the cost of some extra tokens.
+
+    Fast paths:
+      * If ``query`` is an exact qname (contains ``:`` and matches a known
+        symbol), the search step is skipped — we go straight to building the
+        pack around that single symbol.
+
+    For each of the top ``k_seeds`` search hits, the response includes:
+      - qname, signature, docstring, file, line range
+      - up to ``neighbor_limit`` callees (signature + docstring summary)
+      - up to ``neighbor_limit`` callers (signature + docstring summary)
+      - full source code for the top ``source_for_top`` seeds
+      - **resolved_value** for constant aliases (e.g. ``NAME = OTHER_NAME`` is
+        followed up to 3 hops so the agent sees the terminal literal).
+
+    Also included: file outlines for all unique files among the seeds (up to 5).
+    """
+    root_path = Path(root).resolve()
+
+    # Fast path: exact qname lookup, skipping the search pipeline entirely.
+    if ":" in query:
+        idx_tmp = _open(root_path)
+        try:
+            direct = idx_tmp.get_symbol(query)
+        finally:
+            idx_tmp.close()
+        if direct is not None:
+            seeds = [
+                {
+                    "qname": direct["qname"],
+                    "kind": direct["kind"],
+                    "signature": direct["signature"],
+                    "docstring": _docstring_summary(direct["docstring"]),
+                    "file": direct["file"],
+                    "lines": f"{direct['line_start']}-{direct['line_end']}",
+                    "score": 1.0,
+                    "decorators": direct["decorators"].split("\n") if direct["decorators"] else None,
+                }
+            ]
+            mode = "exact"
+        else:
+            search_result = search_code(query, k=k_seeds, kind=kind, root=root_path, mode=mode)
+            seeds = search_result["results"]
+    else:
+        search_result = search_code(query, k=k_seeds, kind=kind, root=root_path, mode=mode)
+        seeds = search_result["results"]
+
+    if not seeds:
+        return {
+            "query": query,
+            "mode": mode,
+            "seeds": [],
+            "hint": "No matches. Try different keywords, or widen with a conceptual query (e.g. 'retry logic' vs 'ErrorHandler').",
+            "token_estimate": 0,
+        }
+
+    idx = _open(root_path)
+    try:
+        enriched: list[dict] = []
+        top_file_outline: dict | None = None
+
+        for i, seed in enumerate(seeds):
+            qname = seed["qname"]
+            entry = {
+                "rank": i + 1,
+                "qname": qname,
+                "kind": seed["kind"],
+                "signature": seed["signature"],
+                "docstring": seed.get("docstring"),
+                "file": seed["file"],
+                "lines": seed.get("lines"),
+                "score": seed.get("score"),
+            }
+            if seed.get("decorators"):
+                entry["decorators"] = seed["decorators"]
+
+            # Neighborhood: callees + callers
+            callees: list[dict] = []
+            for row in idx.callees_of(qname)[:neighbor_limit]:
+                neigh_qname = row["callee_qname"] or f"?:{row['callee_name']}"
+                if row["callee_qname"]:
+                    nrow = idx.get_symbol(neigh_qname)
+                    if nrow is not None:
+                        callees.append(_neighbor_entry(nrow, row["line"]))
+                        continue
+                callees.append({"qname": neigh_qname, "line": row["line"], "resolved": False})
+
+            callers: list[dict] = []
+            for row in idx.callers_of(qname)[:neighbor_limit]:
+                nrow = idx.get_symbol(row["caller_qname"])
+                if nrow is not None:
+                    callers.append(_neighbor_entry(nrow, row["line"]))
+
+            if callees:
+                entry["callees"] = callees
+            if callers:
+                entry["callers"] = callers
+
+            # Full source for the top ``source_for_top`` seeds.
+            if i < source_for_top:
+                try:
+                    src = Path(seed["file"]).read_text(encoding="utf-8", errors="replace")
+                    lines = src.splitlines()
+                    start, end = _parse_line_range(seed.get("lines", "1-1"))
+                    body = "\n".join(lines[start - 1 : end])
+                    if len(body) > body_char_cap:
+                        body = body[:body_char_cap] + f"\n# ... truncated ({len(body) - body_char_cap} chars) ..."
+                    entry["source"] = body
+                except OSError as e:
+                    entry["source_error"] = str(e)
+
+            # Constant-alias resolution: if this seed is `NAME = OTHER_NAME`,
+            # follow the chain and attach the terminal literal value. Works
+            # across files — the agent sees the real string without an extra
+            # call.
+            if seed["kind"] == "constant":
+                resolved = _resolve_constant_chain(idx, seed["signature"], seed["qname"])
+                if resolved is not None:
+                    entry["resolved_value"] = resolved
+
+            enriched.append(entry)
+
+        # File outlines for the top N unique seed files — gives sibling context
+        # across the symbols most relevant to the query. For a question that
+        # spans multiple files (e.g. "LLM providers"), one seed's file isn't
+        # enough; we include up to 3 unique files' outlines.
+        seen_files: list[str] = []
+        for seed in seeds:
+            if seed["file"] not in seen_files:
+                seen_files.append(seed["file"])
+            if len(seen_files) >= 5:
+                break
+        file_outlines: list[dict] = []
+        for f in seen_files:
+            rows = idx.symbols_in_file(f)
+            if not rows:
+                continue
+            file_outlines.append(
+                {
+                    "file": f,
+                    "symbols": [
+                        {
+                            "qname": r["qname"],
+                            "kind": r["kind"],
+                            "signature": r["signature"],
+                            "lines": f"{r['line_start']}-{r['line_end']}",
+                        }
+                        for r in rows
+                    ],
+                }
+            )
+    finally:
+        idx.close()
+
+    payload = {
+        "query": query,
+        "mode": mode,
+        "seeds": enriched,
+        "file_outlines": file_outlines,
+    }
+    payload["token_estimate"] = _rough_token_count(payload)
+    payload["hint"] = (
+        "This response bundles search + callees + callers + top sources + a file outline. "
+        "If it's still not enough, call `expand`, `outline`, or `source` on a specific qname."
+    )
+    return payload
+
+
+_CONSTANT_ALIAS_RE = __import__("re").compile(r"^\s*[A-Z][A-Z0-9_]*\s*=\s*([A-Z][A-Z0-9_]*)\s*$")
+
+
+def _resolve_constant_chain(
+    idx, signature: str, origin_qname: str, max_hops: int = 3
+) -> dict | None:
+    """If ``signature`` is of the form ``NAME = OTHER_NAME``, follow the alias.
+
+    Returns a dict describing the terminal literal value found (up to
+    ``max_hops`` steps). Returns None if the RHS is already a literal or the
+    chain can't be resolved.
+
+    The search is cross-file — constants live in their own modules (commonly
+    ``ai_defaults.py``-style registries). We match any qname whose tail equals
+    the referenced name.
+    """
+    current_sig = signature
+    current_qname = origin_qname
+    chain: list[str] = []
+    visited = {origin_qname}
+    for _ in range(max_hops):
+        m = _CONSTANT_ALIAS_RE.match(current_sig)
+        if m is None:
+            # Current sig is either a literal already (first iter) or a
+            # resolved value we just reached.
+            if chain:
+                return {"chain": chain, "value": current_sig.split("=", 1)[1].strip(), "terminal_qname": current_qname}
+            return None
+        target_name = m.group(1)
+        # Look up any constant whose qname ends in ":<target_name>" or
+        # ".<target_name>". Exclude already-visited qnames so we don't loop
+        # back to the origin or revisit an earlier hop.
+        excluded = list(visited)
+        placeholders = ",".join("?" * len(excluded))
+        row = idx.conn.execute(
+            f"SELECT qname, signature FROM symbols "
+            f"WHERE kind='constant' "
+            f"AND (qname = ? OR qname LIKE ? OR qname LIKE ?) "
+            f"AND qname NOT IN ({placeholders}) "
+            f"LIMIT 1",
+            (target_name, f"%:{target_name}", f"%.{target_name}", *excluded),
+        ).fetchone()
+        if row is None:
+            return None
+        chain.append(row["qname"])
+        visited.add(row["qname"])
+        current_sig = row["signature"]
+        current_qname = row["qname"]
+    # Reached hop limit — report what we have if we resolved at least once.
+    if chain:
+        final_val = current_sig.split("=", 1)[1].strip() if "=" in current_sig else current_sig
+        return {"chain": chain, "value": final_val, "terminal_qname": current_qname}
+    return None
+
+
+def _neighbor_entry(row, call_line: int) -> dict:
+    return {
+        "qname": row["qname"],
+        "kind": row["kind"],
+        "signature": row["signature"],
+        "docstring": _docstring_summary(row["docstring"]),
+        "line": call_line,
+    }
+
+
+def _parse_line_range(lines: str) -> tuple[int, int]:
+    if "-" in lines:
+        a, b = lines.split("-", 1)
+        return int(a), int(b)
+    n = int(lines)
+    return n, n
+
+
+def _rough_token_count(payload: dict) -> int:
+    """Approximate token count as chars/4 over the payload's JSON rendering."""
+    import json
+    return len(json.dumps(payload)) // 4
+
+
+# ---------- indexing entry point (called by CLI) ----------
+
+
+def index_root(root: str | Path) -> dict:
+    """Index (or re-index) every supported source file under ``root``.
+
+    Incremental: files whose SHA matches the stored value are skipped.
+    Returns a summary dict with counts.
+    """
+    from neargrep.index import sha_bytes
+    from neargrep.parsers.registry import parser_for
+    from neargrep.walker import iter_source_files
+
+    root_path = Path(root).resolve()
+    idx = Index(db_path_for(root_path))
+    scanned = 0
+    updated = 0
+    skipped = 0
+    symbol_count = 0
+    demoted = 0
+    embedded = 0
+    removed = 0
+    try:
+        # Snapshot the current filesystem view and diff it against the DB so we
+        # can clean up rows for files that have been deleted / renamed / moved
+        # into .gitignore since the last index. Without this step, stale
+        # symbols and call edges accumulate indefinitely.
+        walker_files = {str(f.resolve()) for f in iter_source_files(root_path)}
+        db_files = {
+            row["path"]
+            for row in idx.conn.execute("SELECT path FROM files").fetchall()
+        }
+        for stale in db_files - walker_files:
+            idx.forget_file(stale)
+            removed += 1
+
+        for file_str in walker_files:
+            file = Path(file_str)
+            scanned += 1
+            data = file.read_bytes()
+            sha = sha_bytes(data)
+            if idx.current_sha(file_str) == sha:
+                skipped += 1
+                continue
+            parser = parser_for(file.suffix)
+            assert parser is not None   # walker already filtered
+            result = parser.parse(file, root_path)
+            idx.ingest(file_str, parser.language, sha, result)
+            updated += 1
+            symbol_count += len(result.symbols)
+        # Post-pass 1: demote optimistic callee_qnames that didn't land on a real symbol.
+        demoted = idx.demote_unresolved_calls()
+        # Post-pass 2: embed any new symbols that don't yet have vectors.
+        missing = idx.symbols_without_vectors()
+        if missing:
+            from neargrep.embeddings import embed_texts, symbol_text_for_embedding
+
+            texts = [
+                symbol_text_for_embedding(m["qname"], m["signature"], m["docstring"])
+                for m in missing
+            ]
+            vectors = embed_texts(texts)
+            idx.upsert_vectors([m["qname"] for m in missing], vectors)
+            embedded = len(missing)
+    finally:
+        idx.close()
+
+    return {
+        "root": str(root_path),
+        "files_scanned": scanned,
+        "files_updated": updated,
+        "files_unchanged": skipped,
+        "files_removed": removed,
+        "symbols_indexed": symbol_count,
+        "calls_demoted": demoted,
+        "symbols_embedded": embedded,
+    }
