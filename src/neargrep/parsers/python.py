@@ -32,6 +32,7 @@ class PythonParser:
             file=str(path.resolve()),
             source=source,
         )
+        visitor.emit_module(tree)
         visitor.visit(tree)
         return ParseResult(
             symbols=visitor.symbols,
@@ -52,6 +53,41 @@ class _Visitor(ast.NodeVisitor):
         self._stack: list[str] = []         # member path (class/function names)
         self._current_fn_qname: str | None = None  # enclosing function for call attribution
         self._import_table: dict[str, str] = {}  # local_name -> fully qualified origin
+
+    # ---------- module ----------
+
+    def emit_module(self, tree: ast.Module) -> None:
+        """Emit a Symbol(kind='module') iff the file has a module-level docstring.
+
+        Module docstrings often hold the architectural prose — the "why" a
+        file exists — that isn't repeated on any single class/function. Making
+        the module a first-class symbol lets FTS and vector search surface it.
+        """
+        docstring = ast.get_docstring(tree, clean=True)
+        if not docstring:
+            return
+        qname = make_qname(self.module, [])
+        end_line = max(
+            (getattr(n, "end_lineno", None) or getattr(n, "lineno", 1) for n in tree.body),
+            default=1,
+        )
+        signature = f"module {self.module}" if self.module else "module"
+        self.symbols.append(
+            Symbol(
+                qname=qname,
+                kind="module",
+                language="python",
+                signature=signature,
+                docstring=docstring,
+                file=self.file,
+                line_start=1,
+                line_end=end_line,
+                parent_qname=None,
+                decorators=[],
+                bases=[],
+                source_sha=_sha_of_lines(self.source_lines, 1, end_line),
+            )
+        )
 
     # ---------- imports ----------
 

@@ -13,6 +13,41 @@ def _parse(tmp_path: Path, filename: str, source: str):
     return TypeScriptParser().parse(f, tmp_path)
 
 
+def test_module_docstring_from_leading_jsdoc(tmp_path: Path) -> None:
+    """A /** … */ block at the top of a file should produce a module symbol."""
+    r = _parse(
+        tmp_path,
+        "runner.ts",
+        "/**\n"
+        " * Task runner for streaming script output.\n"
+        " *\n"
+        " * Publishes deltas on a Redis pub/sub channel.\n"
+        " */\n"
+        "export function run() {}\n",
+    )
+    mod = next(s for s in r.symbols if s.kind == "module")
+    assert mod.qname == "runner:"
+    assert "Task runner for streaming script output." in mod.docstring
+    assert "Redis pub/sub channel" in mod.docstring
+
+
+def test_no_module_symbol_for_plain_block_comment(tmp_path: Path) -> None:
+    """A plain /* … */ (not /** … */) should NOT produce a module symbol —
+    those are usually license headers, not documentation."""
+    r = _parse(
+        tmp_path,
+        "licensed.ts",
+        "/* Copyright 2024. All rights reserved. */\n"
+        "export function run() {}\n",
+    )
+    assert not any(s.kind == "module" for s in r.symbols)
+
+
+def test_no_module_symbol_without_leading_comment(tmp_path: Path) -> None:
+    r = _parse(tmp_path, "bare.ts", "export function run() {}\n")
+    assert not any(s.kind == "module" for s in r.symbols)
+
+
 def test_function_declaration_is_captured(tmp_path: Path) -> None:
     r = _parse(
         tmp_path,

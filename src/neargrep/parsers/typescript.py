@@ -79,7 +79,53 @@ class _Visitor:
         # then do the full walk. Collecting names is cheap and lets us resolve
         # calls to locally-defined sibling symbols regardless of source order.
         self._collect_local_names(node)
+        self._emit_module(node)
         self._visit(node)
+
+    def _emit_module(self, root) -> None:
+        """Emit Symbol(kind='module') if the file opens with a /** … */ block.
+
+        Convention: in TS/JS, the file-level "docstring" is a JSDoc-style block
+        comment at the very top of the program. We only accept /** … */ (not
+        plain /* … */, which is usually a license header) to avoid indexing
+        noise.
+        """
+        first_comment = None
+        for child in root.children:
+            if child.type == "comment":
+                first_comment = child
+                break
+            if child.type in ("hash_bang_line",):
+                continue
+            break
+        if first_comment is None:
+            return
+        text = self._text(first_comment).strip()
+        if not text.startswith("/**"):
+            return
+        body = text[3:-2] if text.endswith("*/") else text[3:]
+        cleaned = "\n".join(line.lstrip(" *") for line in body.splitlines()).strip()
+        if not cleaned:
+            return
+        qname = make_qname(self.module, [])
+        signature = f"module {self.module}" if self.module else "module"
+        end_line = root.end_point[0] + 1
+        self.symbols.append(
+            Symbol(
+                qname=qname,
+                kind="module",
+                language="typescript",
+                signature=signature,
+                docstring=cleaned,
+                file=self.file,
+                line_start=1,
+                line_end=end_line,
+                parent_qname=None,
+                decorators=[],
+                bases=[],
+                source_sha=self._sha_of_node(root),
+            )
+        )
 
     def _collect_local_names(self, root) -> None:
         for child in root.children:
@@ -424,6 +470,11 @@ class _Visitor:
             if _is_module_scope(node) and _is_constant_like(value_node):
                 if name.isupper() or _has_type_annotation(name_node.parent):
                     signature = self._text(decl).strip()
+                    # Large typed configs (e.g. `const cols: ColumnDef<T>[] = [...]`
+                    # in a React table) can have multi-KB RHS values. Truncate so
+                    # the stored signature and its FTS/embedding text stay small.
+                    if len(signature) > 240:
+                        signature = signature[:240].rstrip() + " …"
                     self.symbols.append(
                         Symbol(
                             qname=make_qname(self.module, self._stack + [name]),

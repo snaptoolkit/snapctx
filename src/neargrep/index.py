@@ -147,6 +147,18 @@ class Index:
     def _insert_symbols(self, symbols: list[Symbol]) -> None:
         if not symbols:
             return
+        # Dedupe by qname within this file. Sources like conditional
+        # redefinitions (``if x: def foo(): ... else: def foo(): ...``) or
+        # bundled/minified JS that reuse short names in different scopes can
+        # produce duplicate qnames for one file; keep the first occurrence.
+        seen: set[str] = set()
+        unique: list[Symbol] = []
+        for s in symbols:
+            if s.qname in seen:
+                continue
+            seen.add(s.qname)
+            unique.append(s)
+        symbols = unique
         rows = [
             (
                 s.qname,

@@ -24,10 +24,20 @@ def test_extracts_symbols_with_correct_qnames(tmp_path: Path) -> None:
     result = PythonParser().parse(src / "mod.py", tmp_path)
     qnames = {s.qname: s.kind for s in result.symbols}
     assert qnames == {
+        "pkg.mod:": "module",
         "pkg.mod:top_level": "function",
         "pkg.mod:Widget": "class",
         "pkg.mod:Widget.spin": "method",
     }
+    module_sym = next(s for s in result.symbols if s.kind == "module")
+    assert module_sym.docstring == "Top doc."
+
+
+def test_no_module_symbol_without_docstring(tmp_path: Path) -> None:
+    """A file with no top docstring should not emit a kind='module' symbol."""
+    (tmp_path / "bare.py").write_text("def f(): pass\n")
+    result = PythonParser().parse(tmp_path / "bare.py", tmp_path)
+    assert not any(s.kind == "module" for s in result.symbols)
 
 
 def test_resolves_imported_call(tmp_path: Path) -> None:
