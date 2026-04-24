@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-**Structured codebase context for AI agents.** One tool call replaces the agent's usual loop of `grep` + `read` + chase imports. Point it at a codebase; ask a natural-language question; get back a self-contained context pack — top symbols, their signatures, their docstrings, their call graph neighborhood, and the full source of the top matches — in 5–30 ms per query once warm.
+**Structured codebase context for AI agents.** One tool call replaces the agent's usual loop of `grep` + `read` + chase imports. Point it at a codebase; ask a natural-language question; get back a self-contained context pack — top symbols, their signatures, their docstrings, a **depth-2 call-path trace**, module-level architectural docstrings, and the full source of the top matches — in single-digit ms per query once warm.
 
-Built for Python v0.1. Architecture is language-agnostic.
+Python, TypeScript, TSX, and JSX today. Parser layer is pluggable — more languages are straight additions.
 
 ---
 
@@ -102,7 +102,7 @@ Agents default to `Grep` + `Read` out of habit. Paste this into your project's `
 
 This repo is indexed by `neargrep` (MCP server registered in `.mcp.json`). When you need to understand unfamiliar code, prefer these tools over `Grep`/`Read`:
 
-**First move for any code-understanding question: `mcp__neargrep__context`.** Pass a natural-language query or identifier. Returns top symbols with source, callees, callers, and file outlines — typically enough to answer without follow-up.
+**First move for any code-understanding question: `mcp__neargrep__context`.** Pass a natural-language query or identifier. Returns top symbols with source, a depth-2 call-path trace (callees-of-callees + callers-of-callers), and file outlines — typically enough to answer without follow-up.
 
 **Drill-down** (only when `context` wasn't enough):
 - `mcp__neargrep__search` — ranked symbols; args: query, k, mode, kind.
@@ -169,15 +169,20 @@ Any secret hardcoded into a `.py` file (API keys in module constants, credential
 
 `neargrep index <root>` walks the repo respecting `.gitignore` and per-extension parsers, then builds three artifacts in `<root>/.neargrep/`:
 
-1. **`symbols` table** — every function, method, class, nested closure, and module-level or class-level constant. Fields: qualified name (`module.path:Class.method`), kind, signature, docstring, file, line range, decorators, base classes, source SHA.
-2. **`calls` table** — caller → callee edges. Callee names are heuristically resolved against the caller's import table, with optimistic resolution through base-class MRO for `self.X` method calls. After full ingest, a demotion pass nulls out any callee qname that didn't land on a real symbol (so the agent doesn't chase dead `Model.objects.filter`-style chains).
+1. **`symbols` table** — every function, method, class, nested closure, interface, type alias, React component, module (with file-level docstring or leading JSDoc block), and module-level or class-level constant. Fields: qualified name (`module.path:Class.method`), kind, signature, docstring, file, line range, decorators, base classes, source SHA.
+2. **`calls` table** — caller → callee edges. Callee names are heuristically resolved against the caller's import table, with optimistic resolution through base-class MRO for `self.X` method calls. Calls in decorator arguments and default values are attributed to the module, not the decorated function (they run at definition time, not per-call). After full ingest, two post-passes fix up edges:
+   - **Demote** — nulls any callee qname that didn't land on a real symbol (so the agent doesn't chase dead `Model.objects.filter`-style chains).
+   - **Promote** — resolves forward-referenced `self.X()` calls where the target method was defined later in the same class body than the caller.
 3. **`symbols_fts`** (SQLite FTS5 virtual table) + **`symbol_vectors`** (384-dim `bge-small-en-v1.5` embeddings) — for search.
 
 Incremental: files whose SHA matches the stored value are skipped. Only changed files get re-parsed and re-embedded.
 
-**Cost on a real repo (biblereader backend, 278 files, 1,796 symbols):**
-- Full index from scratch: ~20 seconds (embeddings dominate — pure parse+SQL is ~1.3 s)
-- Re-index after editing one file: <500 ms
+The walker skips vendored/bundled assets by default: `node_modules`, `.venv`, `dist`, `vendor`, `bower_components`, `*.min.js`, `*.bundle.js`, `*-bundle.js`, `*.standalone.js`, `*.lib.js`, `*.worker.js`, `*.map`, plus any source file over 250 KB (real hand-written code stays well under this ceiling; bundles never do).
+
+**Cost on a real mixed-language monorepo (754 files, 3,290 symbols — Python Django backend + Next.js frontend):**
+- Full index from scratch: **~10 seconds** (cold, including ONNX model load)
+- Re-index after editing one file: <200 ms (SHA-skip the rest)
+- Query-time `context()` with depth-2 call trace: **~380 ms** cold, **5–10 ms** warm
 
 ### Query-time: the four ops
 
@@ -205,13 +210,12 @@ This is the operation most agents should call first. It bundles everything the a
 2. **Fast path:** if the query contains `:` and exactly matches a known qname, the search is skipped entirely. The pack is built around that single symbol in ~1 ms.
 3. For each of the top `k_seeds=5` hits:
    - Signature, docstring, file, line range, decorators, score.
-   - Up to `neighbor_limit=8` callees (signatures only).
-   - Up to `neighbor_limit=8` callers (signatures only).
+   - **Depth-2 call trace** — up to `neighbor_limit=8` direct callees, each resolved callee carrying up to `max(3, neighbor_limit//2)` of its own callees. Same shape for callers. An agent sees the full flow (e.g. `Runner.emit → _publish_delta → client.publish`) without a follow-up `expand` call. Unresolved calls to Python builtins (`print`, `len`, `isinstance`, …) are filtered so the graph stays focused on domain code.
    - Full source body (capped at `body_char_cap=2000` chars each), for all top `source_for_top=5` seeds.
    - **Constant-alias resolution**: if the seed is `NAME = OTHER_NAME`, the chain is followed (up to 3 hops, cross-file) and the terminal literal is attached as `resolved_value`. So the agent sees the real string (`'claude-opus-4-5'`) without a separate `source` call on the registry module.
-4. File outlines for up to 5 unique files among the seeds. Survey questions that span multiple files get multi-file context for free.
+4. File outlines for up to 8 unique files among the search candidates (the pool is overfetched beyond the top-K seeds so survey questions get full coverage).
 
-Typical output is 3–10 k tokens. Warm in-process latency is 5–8 ms.
+Typical output is 3–8 k tokens. Warm in-process latency is 5–10 ms.
 
 ### Ranking details & why hybrid won
 
@@ -249,16 +253,20 @@ Highlights from the lexical-vs-vector head-to-head:
 
 ### Performance
 
-All numbers measured on the biblereader backend (278 files, 1,796 symbols) on an M-series Mac.
+Measured on a mixed-language monorepo — Python Django backend + Next.js frontend, 754 files, 3,290 symbols — on an M-series Mac.
 
 | Path | Latency |
 |---|---:|
-| Cold CLI, exact qname (fast path) | 27 ms |
-| Cold CLI, hybrid search | ~280 ms |
-| Warm in-process, hybrid | **5–8 ms** |
-| Warm in-process, exact qname | **1.2 ms** |
+| Cold index from scratch (parse + embed all symbols) | ~10 s |
+| Re-index after one-file edit (SHA-skip the rest) | <200 ms |
+| Cold CLI, hybrid `context()` call | ~380 ms |
+| Cold CLI, exact qname (fast path) | ~30 ms |
+| Warm in-process, hybrid `context()` (depth-2 trace) | **5–10 ms** |
+| Warm in-process, exact qname | **1–2 ms** |
 
-The cold-to-warm delta is almost entirely the fastembed ONNX model load. Inside an MCP server or long-running process, the model loads once and every subsequent query runs in single-digit ms.
+The cold-to-warm delta is almost entirely the fastembed ONNX model load. Inside an MCP server, the file watcher, or any long-running process, the model loads once and every subsequent query runs in single-digit ms.
+
+Indexing is I/O- and embedding-bound. The three levers we tuned (on the way from 85 s → 10 s on the same repo): walker-level vendor-bundle filter, TS signature truncation to 240 chars so massive `const X: ColumnDef<T>[] = [...]` declarations don't bloat the index, and `fastembed` batch size = 4 (counter-intuitive, but smaller batches mean less ONNX padding waste on mixed-length texts).
 
 ---
 
@@ -310,9 +318,17 @@ All functions return JSON-serializable dicts.
       "score": 0.0381,
       "decorators": ["@property"],
       "callees": [
-        { "qname": "other:helper", "signature": "def helper(x)", "docstring": "…", "line": 55 }
+        {
+          "qname": "other:helper",
+          "signature": "def helper(x)",
+          "docstring": "…",
+          "line": 55,
+          "callees": [                        // depth-2 nested hop
+            { "qname": "util:sanitize", "signature": "def sanitize(x)", "line": 12 }
+          ]
+        }
       ],
-      "callers": [ /* same shape */ ],
+      "callers": [ /* same shape, with nested "callers" at depth 2 */ ],
       "source": "def method(self, arg: T) -> R:\n    …",
       "resolved_value": {      // only for constant-alias seeds
         "chain": ["defaults:DEFAULT_MODEL"],
@@ -361,23 +377,23 @@ All functions return JSON-serializable dicts.
 ## What's indexed, what's not
 
 **Indexed:**
-- Functions and methods (`def`, `async def`), including nested / closure definitions.
-- Classes (with base-class list for MRO-aware `self.X` resolution).
-- Module-level constants: `UPPER_CASE = literal | identifier | collection`.
-- Class-level constants: `class C: STATUS_CHOICES = [...]`.
-- Imports (for call-site resolution).
-- Call edges, with optimistic `self.X` resolution through base classes.
+- **Python:** functions and methods (`def`, `async def`, including nested / closure definitions); classes (with base-class list for MRO-aware `self.X` resolution); module-level constants (`UPPER_CASE = literal | identifier | collection`); class-level constants (`class C: STATUS_CHOICES = [...]`); imports (for call-site resolution).
+- **TypeScript / TSX / JSX:** functions and arrow-const functions; classes (with `extends` / `implements` base chain); interfaces and type aliases; enums; React components (capitalized name + JSX in body); module-scope typed constants. JSX usage is tracked as a call edge (`<Button />` → `Button:Button`).
+- **Module docstrings** — Python files with a top string docstring and TS/JSX files opening with a `/** … */` block. This captures the architectural "why" of a file, which often isn't repeated on any single class or function.
+- **Call edges**, with optimistic `self.X` resolution through base classes, plus a post-ingest *promote* pass that fixes up forward references (methods defined later in the class body than their caller).
 
-**Not indexed (yet):**
+**Not indexed (by design):**
 - Strings inside source files (so `urlpatterns = [...]` route strings are not searchable).
-- Docstrings of module files (only symbol docstrings).
-- Comment blocks.
+- Comment blocks (except file-leading JSDoc).
 - Runtime-dynamic symbols (metaclasses, `type(...)` factories, monkeypatched attributes).
+- Bundled / vendored / minified JS (walker skips files over 250 KB and common bundle suffixes like `*-bundle.js`, `*.lib.js`, `*.standalone.js`, `*.worker.js`, `*.map`).
+- Calls that run at module-load time, not runtime — decorator arguments, default values, and type annotations aren't attributed as the enclosing function's callees.
 
 **Known rough edges:**
 - `self.x.y.z` attribute chains are left unresolved by design — guessing is worse than saying "don't chase this".
 - Django ORM-style `Model.objects.filter(...)` is demoted to unresolved after the post-ingest sweep (the chain doesn't point at real symbols).
 - Class hierarchies where the base lives behind a runtime import or dynamic `__init_subclass__` will miss MRO edges.
+- TypeScript callee resolution is limited without a full type system: calls on parameters, local variables, imported constants, and `this.*` are often unresolved. Depth-2 traces are most useful on Python code paths.
 
 ---
 
@@ -393,19 +409,26 @@ neargrep/
     parsers/
       base.py           # Parser protocol (language-agnostic)
       python.py         # stdlib ast implementation
+      typescript.py     # tree-sitter TS + TSX grammars (JSX-aware)
       registry.py       # extension → parser dispatch
-    walker.py           # gitignore-aware file walker
-    index.py            # SQLite schema, FTS5, vector BLOB, incremental upsert
+    walker.py           # gitignore-aware file walker + bundle/size filters
+    index.py            # SQLite schema, FTS5, vector BLOB, promote/demote passes
     embeddings.py       # fastembed + bge-small-en-v1.5
+    watch.py            # debounced file-watcher for auto re-index on save
     api.py              # search_code, expand, outline, get_source, context, index_root
-    cli.py              # argparse entry point
+    cli.py              # argparse entry point (index, search, expand, outline,
+                        #                       source, context, watch)
+    adapters/
+      mcp.py            # MCP stdio server for Claude Code / Cursor / Cline
   tests/
     fixtures/sample_pkg/
-    test_parser.py test_qname.py test_api.py test_constants.py
-    test_demotion.py test_embeddings.py test_context.py test_context_alias.py
+    test_parser.py  test_qname.py  test_api.py  test_constants.py
+    test_demotion.py  test_embeddings.py  test_context.py  test_context_alias.py
+    test_incremental.py  test_mcp_adapter.py  test_typescript_parser.py
+    test_watch.py
 ```
 
-Add a new language by implementing `parsers/base.Parser` for its extension and registering it in `parsers/registry`. The SQLite schema, ranking, and `context()` logic are all language-agnostic.
+Add a new language by implementing `parsers/base.Parser` for its extension and registering it in `parsers/registry`. The SQLite schema, ranking, `context()` logic, and post-ingest promote/demote passes are all language-agnostic — the TypeScript parser slotted in without any changes outside its own file.
 
 ---
 
@@ -417,30 +440,33 @@ uv pip install --group dev      # or: uv pip install pytest
 pytest
 ```
 
-39 tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
+70 tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
 
 ---
 
 ## Status and roadmap
 
-**v0.1 core — complete and validated on a real 1,600-symbol codebase:**
-- [x] Python AST extraction (functions, methods, classes, nested scopes, constants)
-- [x] Call graph with MRO-aware `self.X` resolution
+**Shipped — validated on a mixed-language monorepo (Django + Next.js, 754 files / 3,290 symbols):**
+- [x] Python AST extraction — functions, methods, classes, nested scopes, module-level + class-level constants, **module docstrings**
+- [x] TypeScript / TSX / JSX parser (tree-sitter) — functions, arrow consts, classes, interfaces, type aliases, enums, React components, constants, imports, JSX usage as call edges, **leading JSDoc module docs**
+- [x] Call graph with MRO-aware `self.X` resolution, plus post-ingest **promote** pass for forward references
+- [x] Decorator-arg / default-value / type-annotation calls filtered out of runtime call graph
 - [x] SQLite + FTS5 lexical search
 - [x] `bge-small-en-v1.5` embeddings + cosine vector search
 - [x] Weighted RRF hybrid ranker with test-file demotion
-- [x] One-shot `context()` op with constant-alias resolution and multi-file outlines
+- [x] One-shot `context()` — **depth-2 call-path trace**, constant-alias resolution, multi-file outlines from an overfetched candidate pool
+- [x] Builtin-noise filter for unresolved callees (`?:print`, `?:len`, `?:isinstance`, …)
 - [x] Fast path for exact-qname queries (~1 ms warm)
 - [x] Incremental indexing (SHA-based)
-
-**Shipped:**
-- [x] **MCP stdio adapter** (`neargrep-mcp`) — exposes all five ops to Claude Code / Cursor / Cline via `.mcp.json`.
+- [x] Walker vendor-bundle / size filter — skips minified JS, source maps, `*-bundle.js`, `*.lib.js`, `*.standalone.js`, and anything over 250 KB
+- [x] **MCP stdio adapter** (`neargrep-mcp`) — exposes all five ops to Claude Code / Cursor / Cline via `.mcp.json`
+- [x] **File watcher** (`neargrep watch`) — debounced auto re-index on save, typical run ~5 ms warm
 
 **Planned next:**
+- [ ] **TS scope tracker** — parameter / local / import resolution so TS callee traces aren't stuck at depth 1.
 - [ ] **Google ADK adapter** — thin `FunctionTool` wrappers over `neargrep.api` for in-process ADK agents.
-- [ ] **TypeScript / TSX parser** — the parser layer is already plugin-shaped; add `parsers/typescript.py` using tree-sitter.
-- [ ] **File watcher** — auto re-index on save.
 - [ ] **`neargrep serve` daemon** — holds model + DB warm so even cold-CLI calls are single-digit ms.
+- [ ] **Adaptive ranker** — stopword-filter / vector-weight bump for long natural-language queries; lexical-heavy for short identifier lookups.
 
 ---
 
