@@ -256,8 +256,29 @@ class _Visitor(ast.NodeVisitor):
         )
         self._stack.append(node.name)
         prev = self._current_fn_qname
+        # Decorators, default values, and type annotations all evaluate at
+        # module-load time, not when the function is invoked. Visiting them
+        # with ``_current_fn_qname = prev`` (usually None for top-level defs)
+        # keeps those calls from being mis-attributed as this function's
+        # callees. Without this split, a Celery task with @shared_task plus
+        # OpenApiParameter(...) × 3 in its decorator shows 4 spurious callees.
+        for dec in node.decorator_list:
+            self.visit(dec)
+        for default in node.args.defaults:
+            if default is not None:
+                self.visit(default)
+        for default in node.args.kw_defaults:
+            if default is not None:
+                self.visit(default)
+        if node.returns is not None:
+            self.visit(node.returns)
+        for arg in (*node.args.args, *node.args.kwonlyargs, *(node.args.posonlyargs or [])):
+            if arg.annotation is not None:
+                self.visit(arg.annotation)
+        # Now visit the body with this function as the current scope.
         self._current_fn_qname = qname
-        self.generic_visit(node)
+        for stmt in node.body:
+            self.visit(stmt)
         self._current_fn_qname = prev
         self._stack.pop()
 

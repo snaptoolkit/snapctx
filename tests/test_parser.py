@@ -33,6 +33,72 @@ def test_extracts_symbols_with_correct_qnames(tmp_path: Path) -> None:
     assert module_sym.docstring == "Top doc."
 
 
+def test_decorator_arg_calls_not_attributed_to_decorated_fn(tmp_path: Path) -> None:
+    """@decorator(arg=OtherCall()) → OtherCall() evaluates at module load and
+    must NOT be attributed as a callee of the decorated function.
+
+    Without this, every Celery task picks up its decorator's OpenApiParameter
+    calls as spurious callees and pollutes the call graph.
+    """
+    (tmp_path / "m.py").write_text(
+        "def describe(x): return x\n"
+        "def wrap(**kw): return lambda f: f\n"
+        "\n"
+        "@wrap(param=describe('hello'))\n"
+        "def target():\n"
+        "    wrap()\n"
+    )
+    result = PythonParser().parse(tmp_path / "m.py", tmp_path)
+    target_calls = [c for c in result.calls if c.caller_qname == "m:target"]
+    names = {c.callee_name for c in target_calls}
+    # Only the runtime call inside target() should be attributed.
+    assert names == {"wrap"}, names
+    # describe('hello') happens at decorator-evaluation (module-load) time.
+    assert "describe" not in names
+
+
+def test_default_value_calls_not_attributed(tmp_path: Path) -> None:
+    """`def f(x=factory()):` — the factory() evaluates once at def time,
+    not per call. Don't attribute it as f's callee."""
+    (tmp_path / "m.py").write_text(
+        "def factory(): return 1\n"
+        "def use(): return 2\n"
+        "def f(x=factory()):\n"
+        "    return use()\n"
+    )
+    result = PythonParser().parse(tmp_path / "m.py", tmp_path)
+    f_calls = {c.callee_name for c in result.calls if c.caller_qname == "m:f"}
+    assert f_calls == {"use"}
+
+
+def test_forward_self_call_resolves_after_post_pass(tmp_path: Path) -> None:
+    """When a method defined earlier in a class calls a method defined later,
+    the parse-time lookup can't find the target yet. The index's
+    promote_self_calls post-pass should still resolve it once all symbols
+    are in."""
+    from neargrep.api import index_root
+    from neargrep.index import Index, db_path_for
+
+    (tmp_path / "m.py").write_text(
+        "class C:\n"
+        "    def early(self):\n"
+        "        self.late()\n"
+        "    def late(self):\n"
+        "        return 42\n"
+    )
+    index_root(tmp_path)
+    idx = Index(db_path_for(tmp_path))
+    try:
+        rows = idx.conn.execute(
+            "SELECT caller_qname, callee_qname, callee_name FROM calls "
+            "WHERE caller_qname = 'm:C.early'"
+        ).fetchall()
+    finally:
+        idx.close()
+    assert rows
+    assert rows[0]["callee_qname"] == "m:C.late"
+
+
 def test_no_module_symbol_without_docstring(tmp_path: Path) -> None:
     """A file with no top docstring should not emit a kind='module' symbol."""
     (tmp_path / "bare.py").write_text("def f(): pass\n")

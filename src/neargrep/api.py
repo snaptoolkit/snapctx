@@ -440,7 +440,7 @@ def context(
     *,
     k_seeds: int = 5,
     source_for_top: int = 5,
-    expand_depth: int = 1,
+    expand_depth: int = 2,
     neighbor_limit: int = 8,
     body_char_cap: int = 2000,
     file_outline_limit: int = 8,
@@ -542,23 +542,17 @@ def context(
             if seed.get("decorators"):
                 entry["decorators"] = seed["decorators"]
 
-            # Neighborhood: callees + callers
-            callees: list[dict] = []
-            for row in idx.callees_of(qname)[:neighbor_limit]:
-                neigh_qname = row["callee_qname"] or f"?:{row['callee_name']}"
-                if row["callee_qname"]:
-                    nrow = idx.get_symbol(neigh_qname)
-                    if nrow is not None:
-                        callees.append(_neighbor_entry(nrow, row["line"]))
-                        continue
-                callees.append({"qname": neigh_qname, "line": row["line"], "resolved": False})
-
-            callers: list[dict] = []
-            for row in idx.callers_of(qname)[:neighbor_limit]:
-                nrow = idx.get_symbol(row["caller_qname"])
-                if nrow is not None:
-                    callers.append(_neighbor_entry(nrow, row["line"]))
-
+            # Neighborhood: callees + callers, walked to expand_depth so an
+            # agent sees the call path (e.g. emit → _publish_delta →
+            # client.publish) without a follow-up ``expand`` call.
+            callees = _collect_neighbors(
+                idx, qname, direction="callees",
+                limit=neighbor_limit, depth=max(1, expand_depth),
+            )
+            callers = _collect_neighbors(
+                idx, qname, direction="callers",
+                limit=neighbor_limit, depth=max(1, expand_depth),
+            )
             if callees:
                 entry["callees"] = callees
             if callers:
@@ -699,6 +693,87 @@ def _neighbor_entry(row, call_line: int) -> dict:
     }
 
 
+# Unresolved callees whose name is a common Python builtin are almost never
+# what an agent tracing a call graph cares about. Drop them from context()
+# output to keep the payload focused. (JS/TS doesn't get the same treatment:
+# its unresolved names like `this.foo` or `.map` carry useful structural
+# signal even without full resolution.)
+_PY_BUILTIN_NOISE = frozenset({
+    "print", "len", "range", "enumerate", "zip", "map", "filter",
+    "sorted", "reversed", "any", "all", "min", "max", "sum", "abs",
+    "str", "int", "float", "bool", "list", "dict", "tuple", "set",
+    "bytes", "bytearray", "frozenset", "open", "type", "id", "repr",
+    "hash", "ord", "chr", "next", "iter", "callable",
+    "isinstance", "issubclass", "hasattr", "getattr", "setattr", "delattr",
+    "format", "vars", "dir", "super", "object", "property", "staticmethod",
+    "classmethod",
+})
+
+
+def _is_builtin_noise(unresolved_qname: str) -> bool:
+    """`?:foo` → drop iff ``foo`` is a bare Python builtin."""
+    if not unresolved_qname.startswith("?:"):
+        return False
+    name = unresolved_qname[2:]
+    if "." in name:
+        return False
+    return name in _PY_BUILTIN_NOISE
+
+
+def _collect_neighbors(
+    idx: Index,
+    qname: str,
+    *,
+    direction: Literal["callees", "callers"],
+    limit: int,
+    depth: int,
+) -> list[dict]:
+    """Gather direction-specific neighbors of ``qname`` up to ``depth`` hops.
+
+    Each resolved entry gets a nested ``callees`` (when direction='callees')
+    or ``callers`` (when direction='callers') with the next hop's neighbors.
+    Unresolved entries never recurse — we don't know what they call. Depth-2
+    neighbors use a tighter limit (half, minimum 3) to keep payloads bounded.
+    """
+    rows = idx.callees_of(qname) if direction == "callees" else idx.callers_of(qname)
+    out: list[dict] = []
+    for row in rows:
+        if len(out) >= limit:
+            break
+        if direction == "callees":
+            neigh_qname = row["callee_qname"] or f"?:{row['callee_name']}"
+            if _is_builtin_noise(neigh_qname):
+                continue
+            if row["callee_qname"]:
+                nrow = idx.get_symbol(neigh_qname)
+                if nrow is not None:
+                    entry = _neighbor_entry(nrow, row["line"])
+                    if depth > 1:
+                        nested = _collect_neighbors(
+                            idx, neigh_qname, direction=direction,
+                            limit=max(3, limit // 2), depth=depth - 1,
+                        )
+                        if nested:
+                            entry["callees"] = nested
+                    out.append(entry)
+                    continue
+            out.append({"qname": neigh_qname, "line": row["line"], "resolved": False})
+        else:
+            nrow = idx.get_symbol(row["caller_qname"])
+            if nrow is None:
+                continue
+            entry = _neighbor_entry(nrow, row["line"])
+            if depth > 1:
+                nested = _collect_neighbors(
+                    idx, row["caller_qname"], direction=direction,
+                    limit=max(3, limit // 2), depth=depth - 1,
+                )
+                if nested:
+                    entry["callers"] = nested
+            out.append(entry)
+    return out
+
+
 def _parse_line_range(lines: str) -> tuple[int, int]:
     if "-" in lines:
         a, b = lines.split("-", 1)
@@ -763,8 +838,14 @@ def index_root(root: str | Path) -> dict:
             idx.ingest(file_str, parser.language, sha, result)
             updated += 1
             symbol_count += len(result.symbols)
-        # Post-pass 1: demote optimistic callee_qnames that didn't land on a real symbol.
+        # Post-pass 1a: demote optimistic callee_qnames that didn't land on
+        # a real symbol. Must run before promote so bogus MRO guesses (e.g.
+        # ``self.x`` guessed against an imported base) are nulled first.
         demoted = idx.demote_unresolved_calls()
+        # Post-pass 1b: promote forward-referenced self.X() calls that now
+        # resolve against the complete symbol table (methods defined later
+        # in the same class body than the caller).
+        idx.promote_self_calls()
         # Post-pass 2: embed any new symbols that don't yet have vectors.
         missing = idx.symbols_without_vectors()
         if missing:

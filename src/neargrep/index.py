@@ -315,6 +315,60 @@ class Index:
         by_qname = {r["qname"]: r for r in symbol_rows}
         return [(by_qname[q], top_scores[q]) for q in top_qnames if q in by_qname]
 
+    def promote_self_calls(self) -> int:
+        """Resolve forward-referenced `self.X()` calls against the complete symbol table.
+
+        The Python parser resolves ``self.method()`` optimistically at parse
+        time, but it can only match against symbols already emitted. When a
+        method (``emit``) is defined before another method it calls
+        (``_publish_delta`` at a later line of the same class), the early
+        caller's resolution fails. After all files are ingested we can look
+        the targets up for real.
+
+        For each call where ``callee_qname IS NULL`` and ``callee_name``
+        begins with ``self.``, derive the enclosing class from the caller's
+        qname (strip the last component) and check whether
+        ``<class>.<method>`` now exists. If yes, update the row.
+
+        Returns the number of rows updated.
+        """
+        pending = self.conn.execute(
+            "SELECT rowid, caller_qname, callee_name FROM calls "
+            "WHERE callee_qname IS NULL "
+            "  AND callee_name LIKE 'self.%' "
+            "  AND callee_name NOT LIKE 'self.%.%'"
+        ).fetchall()
+
+        updates: list[tuple[str, int]] = []
+        for row in pending:
+            caller = row["caller_qname"]
+            callee = row["callee_name"]
+            # Strip trailing ".method" from caller_qname to get the class qname.
+            if "." not in caller:
+                continue
+            class_qname, _, _ = caller.rpartition(".")
+            method = callee[len("self."):]
+            guess = f"{class_qname}.{method}"
+            updates.append((guess, row["rowid"]))
+
+        if not updates:
+            return 0
+        # Validate each guess against the symbols table, update if hit.
+        n = 0
+        with self.tx():
+            for guess, rowid in updates:
+                exists = self.conn.execute(
+                    "SELECT 1 FROM symbols WHERE qname = ?", (guess,)
+                ).fetchone()
+                if exists is None:
+                    continue
+                self.conn.execute(
+                    "UPDATE calls SET callee_qname = ? WHERE rowid = ?",
+                    (guess, rowid),
+                )
+                n += 1
+        return n
+
     def demote_unresolved_calls(self) -> int:
         """Null out callee_qname for any call pointing at a qname that isn't a real symbol.
 
