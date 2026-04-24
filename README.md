@@ -20,9 +20,9 @@ An agent investigating an unfamiliar codebase burns tokens the same way every ti
 4. `Read` two more files to chase imports.
 5. Synthesize, sometimes with gaps.
 
-On a real 1,500-symbol codebase this takes **15–25 tool calls**, **30–80 k agent tokens**, and **60–120 seconds**.
+On a real 1,500-symbol codebase a question like "how does the parallel reader fetch verses for multiple versions?" takes **15–25 tool calls**, **30–80 k agent tokens**, and **60–120 seconds** of end-to-end agent time.
 
-`neargrep` does the same thing in **1 tool call**, **~15 k tokens**, **under 30 seconds cold / under 10 ms warm** — by doing the search → graph-walk → source-read once, on a pre-built index, and returning a single structured payload the agent can reason about immediately.
+`neargrep` answers the same question with **1 tool call** returning **2–5 k tokens** of structured context. That single call runs in **~5 ms warm** (inside a long-lived MCP server, ~400 ms from a cold CLI while the embedding model loads) — by doing the search → graph-walk → source-read → constant-alias resolution once, on a pre-built index, and returning a single structured payload the agent can reason about immediately. The agent's own reasoning time on top of that is still seconds, but the tool-call cost it pays drops by ~10× on calls and ~10× on tokens.
 
 ---
 
@@ -227,13 +227,17 @@ We raced three modes on a real 1,600-symbol repo across two question types:
 
 **Q5 — survey ("list every LLM provider + model + phase"):**
 
-| Mode | Calls | Tokens | Duration | Notes |
+Numbers are **agent-level totals** (tool calls + tokens the agent consumed across the whole question + wall-clock end-to-end). Each row is a fresh blind-eval subagent.
+
+| Mode | Tool calls | Agent tokens | Duration | Notes |
 |---|---:|---:|---:|---|
 | lexical (no constants) | 28 | 80 k | 112 s | missed `DEFAULT_*_MODEL` constants |
 | lexical + constants | 16 | 54 k | 63 s | complete |
 | vector-only | 6 | 44 k | 38 s | complete, some tail noise |
 | composable hybrid | 15 | 41 k | 57 s | most thorough |
-| **`context()`** | **1** | ~15 k | **~30 s cold / <5 s warm** | **complete with alias resolution** |
+| **`context()`** | **1** | 42 k | **30 s** | **complete with alias resolution** |
+
+Caveat: all blind-eval agents made one-off CLI calls (each paying ~400 ms cold-start). In an MCP setup where the server stays warm, the per-call latency drops to 5 ms — but the agent's own reasoning time (generating the follow-up calls it *didn't* need to make, writing the answer) is the same, so the wall-clock win for `context()` comes primarily from replacing **15 reasoning-and-call round-trips with 1**, not from making a single call faster.
 
 Highlights from the lexical-vs-vector head-to-head:
 
