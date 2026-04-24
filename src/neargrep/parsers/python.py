@@ -62,8 +62,14 @@ class _Visitor(ast.NodeVisitor):
         Module docstrings often hold the architectural prose — the "why" a
         file exists — that isn't repeated on any single class/function. Making
         the module a first-class symbol lets FTS and vector search surface it.
+
+        Prefers a triple-quoted docstring, but falls back to a block of ``#``
+        comments at the top of the file — many scripts and config modules
+        document themselves that way without a formal docstring.
         """
         docstring = ast.get_docstring(tree, clean=True)
+        if not docstring:
+            docstring = _leading_comment_docstring(self.source_lines)
         if not docstring:
             return
         qname = make_qname(self.module, [])
@@ -531,3 +537,87 @@ def _end_line(node: ast.AST) -> int:
 def _sha_of_lines(lines: list[str], start: int, end: int) -> str:
     chunk = "\n".join(lines[start - 1 : end])
     return hashlib.sha1(chunk.encode("utf-8")).hexdigest()
+
+
+# Lines that should never count as documentation even if they appear in the
+# leading comment block: shebangs, coding declarations, linter directives.
+_NON_DOC_COMMENT_PATTERNS = (
+    "-*- coding",
+    "coding:",
+    "coding=",
+    "type: ignore",
+    "noqa",
+    "pylint:",
+    "mypy:",
+    "pragma:",
+    "isort:",
+)
+
+# Python keywords that (as the first word of a comment body) strongly suggest
+# the comment is commented-out source code, not prose. We exclude the ambiguous
+# ones ("is", "not", "in", "and", "or", "True", "False", "None") because those
+# also appear in natural sentences.
+_CODE_LEADING_TOKENS = frozenset({
+    "from", "import", "def", "class", "if", "elif", "else", "for", "while",
+    "try", "except", "finally", "with", "return", "yield", "raise", "pass",
+    "continue", "break", "global", "nonlocal", "lambda", "assert", "async",
+    "await", "@",
+})
+
+
+def _looks_like_commented_out_code(body: str) -> bool:
+    """Heuristic: is this comment body a commented-out source line?"""
+    stripped = body.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("@"):
+        return True          # `# @something(...)` → decorator
+    if stripped.startswith("#"):
+        return True          # nested `## ...` → commented-out comment-like line
+    first = stripped.split(None, 1)[0].rstrip(":")
+    return first in _CODE_LEADING_TOKENS
+
+
+def _leading_comment_docstring(source_lines: list[str]) -> str | None:
+    """Derive a module-doc-equivalent string from the leading ``#`` comments.
+
+    Skips shebangs, coding declarations, and common linter directives. Stops
+    at the first blank or non-comment line. Filters out lines that are purely
+    separator characters (``# ---``, ``# ===``). Rejects the whole block when
+    it's mostly commented-out Python (``# from X import Y`` etc). Returns
+    ``None`` unless the extracted text is substantial enough (≥ 30 non-
+    whitespace chars) to be a real doc rather than a stray comment.
+    """
+    collected: list[str] = []
+    code_like = 0
+    for raw in source_lines[:40]:
+        line = raw.rstrip()
+        if not line.strip():
+            if collected:
+                break  # first blank line terminates the leading doc block
+            continue
+        stripped = line.lstrip()
+        if not stripped.startswith("#"):
+            break
+        body = stripped[1:].lstrip()
+        if body.startswith("!"):
+            continue  # shebang
+        lower = body.lower()
+        if any(pat in lower for pat in _NON_DOC_COMMENT_PATTERNS):
+            continue
+        # Pure separator line (``# ---------``): decoration, not content.
+        if body and set(body) <= set("-=*_~"):
+            continue
+        if _looks_like_commented_out_code(body):
+            code_like += 1
+        collected.append(body)
+    if not collected:
+        return None
+    # If the leading block is >30% commented-out code, it's not documentation.
+    if code_like / len(collected) > 0.30:
+        return None
+    text = "\n".join(collected).strip()
+    non_ws = sum(1 for c in text if not c.isspace())
+    if non_ws < 30:
+        return None
+    return text

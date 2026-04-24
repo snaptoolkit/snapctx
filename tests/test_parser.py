@@ -99,6 +99,91 @@ def test_forward_self_call_resolves_after_post_pass(tmp_path: Path) -> None:
     assert rows[0]["callee_qname"] == "m:C.late"
 
 
+def test_module_symbol_from_leading_comment_block(tmp_path: Path) -> None:
+    """Files with no triple-quoted docstring but a substantial leading `#`
+    comment block should still get a module symbol."""
+    (tmp_path / "settings.py").write_text(
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: utf-8 -*-\n"
+        "# Django settings for the production environment.\n"
+        "#\n"
+        "# Configures Redis for sessions, CORS for the frontend origin,\n"
+        "# and the Celery broker for async task execution.\n"
+        "\n"
+        "import os\n"
+    )
+    result = PythonParser().parse(tmp_path / "settings.py", tmp_path)
+    mod = next((s for s in result.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert "Django settings for the production environment." in mod.docstring
+    assert "Celery broker" in mod.docstring
+
+
+def test_leading_comment_skips_separators_and_directives(tmp_path: Path) -> None:
+    """Pure `# ----` separators and `# noqa`-style directives must not count
+    toward the module doc content threshold."""
+    (tmp_path / "a.py").write_text(
+        "# ==========================\n"
+        "# noqa\n"
+        "# type: ignore\n"
+        "import os\n"
+    )
+    result = PythonParser().parse(tmp_path / "a.py", tmp_path)
+    assert not any(s.kind == "module" for s in result.symbols)
+
+
+def test_leading_comment_ignores_short_content(tmp_path: Path) -> None:
+    """A tiny comment isn't documentation — don't emit a module symbol."""
+    (tmp_path / "short.py").write_text("# hello\nimport os\n")
+    result = PythonParser().parse(tmp_path / "short.py", tmp_path)
+    assert not any(s.kind == "module" for s in result.symbols)
+
+
+def test_leading_comment_rejects_commented_out_code(tmp_path: Path) -> None:
+    """A block of commented-out imports / stubs is NOT module documentation —
+    common in abandoned test fixtures."""
+    (tmp_path / "t.py").write_text(
+        "# from mixer.backend.django import mixer\n"
+        "# from django.test import TestCase\n"
+        "# from apps.docs.models import Folder, Doc, DocHistory\n"
+        "# from .base_view import BaseApiTestCase\n"
+        "\n"
+        "def test_x(): pass\n"
+    )
+    result = PythonParser().parse(tmp_path / "t.py", tmp_path)
+    assert not any(s.kind == "module" for s in result.symbols)
+
+
+def test_leading_comment_mixed_prose_and_code(tmp_path: Path) -> None:
+    """Mostly-prose with an example ``# import`` line should still be docs."""
+    (tmp_path / "m.py").write_text(
+        "# Helpers for parsing YAML config files. We keep the loader\n"
+        "# minimal and let callers plug in their own schema validation.\n"
+        "# Example usage:\n"
+        "#     from config.loader import load_yaml\n"
+        "#     config = load_yaml('app.yml')\n"
+        "import yaml\n"
+    )
+    result = PythonParser().parse(tmp_path / "m.py", tmp_path)
+    mod = next((s for s in result.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert "parsing YAML config files" in mod.docstring
+
+
+def test_docstring_preferred_over_comments(tmp_path: Path) -> None:
+    """When both are present, the triple-quoted docstring wins."""
+    (tmp_path / "m.py").write_text(
+        "# This is some comment header that should be ignored here since\n"
+        "# there is a proper docstring below.\n"
+        '"""Real docstring."""\n'
+        "import os\n"
+    )
+    result = PythonParser().parse(tmp_path / "m.py", tmp_path)
+    mod = next((s for s in result.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert mod.docstring == "Real docstring."
+
+
 def test_no_module_symbol_without_docstring(tmp_path: Path) -> None:
     """A file with no top docstring should not emit a kind='module' symbol."""
     (tmp_path / "bare.py").write_text("def f(): pass\n")
