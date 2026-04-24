@@ -1,5 +1,9 @@
 # neargrep
 
+[![CI](https://github.com/neargrep/neargrep/actions/workflows/ci.yml/badge.svg)](https://github.com/neargrep/neargrep/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+
 **Structured codebase context for AI agents.** One tool call replaces the agent's usual loop of `grep` + `read` + chase imports. Point it at a codebase; ask a natural-language question; get back a self-contained context pack — top symbols, their signatures, their docstrings, their call graph neighborhood, and the full source of the top matches — in 5–30 ms per query once warm.
 
 Built for Python v0.1. Architecture is language-agnostic.

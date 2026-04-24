@@ -20,6 +20,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
+[project.urls]
+Homepage = "https://github.com/neargrep/neargrep"
+Repository = "https://github.com/neargrep/neargrep"
+Issues = "https://github.com/neargrep/neargrep/issues"
+
 [project.scripts]
 neargrep = "neargrep.cli:main"
 neargrep-mcp = "neargrep.adapters.mcp:main"
