@@ -15,6 +15,9 @@ dependencies = [
     "numpy>=1.26",
     "fastembed>=0.4",
     "mcp>=1.2",
+    "tree-sitter>=0.24",
+    "tree-sitter-typescript>=0.23",
+    "watchdog>=4.0",
 ]
 
 [project.optional-dependencies]

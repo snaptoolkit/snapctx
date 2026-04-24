@@ -26,6 +26,23 @@ def python_module_path(file: Path, root: Path) -> str:
     return ".".join(parts)
 
 
+def typescript_module_path(file: Path, root: Path) -> str:
+    """Convert a .ts/.tsx path under ``root`` into a slash-separated module path.
+
+    Matches TS import semantics: ``import x from './foo/bar'`` points at
+    file path, not a dotted package. ``index.ts`` / ``index.tsx`` collapse
+    to the directory (like Python ``__init__``).
+
+    root=/repo, file=/repo/src/auth/session.ts  -> 'src/auth/session'
+    root=/repo, file=/repo/src/auth/index.tsx   -> 'src/auth'
+    """
+    rel = file.resolve().relative_to(root.resolve())
+    parts = list(rel.with_suffix("").parts)
+    if parts and parts[-1] == "index":
+        parts = parts[:-1]
+    return "/".join(parts)
+
+
 def make_qname(module: str, member_path: list[str]) -> str:
     """'myapp.auth', ['SessionManager', 'refresh'] -> 'myapp.auth:SessionManager.refresh'.
     An empty member_path means the module itself: 'myapp.auth:'.

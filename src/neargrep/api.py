@@ -443,6 +443,8 @@ def context(
     expand_depth: int = 1,
     neighbor_limit: int = 8,
     body_char_cap: int = 2000,
+    file_outline_limit: int = 8,
+    outline_discovery_k: int = 15,
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
     kind: str | None = None,
     root: str | Path = ".",
@@ -466,9 +468,15 @@ def context(
       - **resolved_value** for constant aliases (e.g. ``NAME = OTHER_NAME`` is
         followed up to 3 hops so the agent sees the terminal literal).
 
-    Also included: file outlines for all unique files among the seeds (up to 5).
+    File outlines: the search is overfetched to ``outline_discovery_k``
+    candidates (15 by default). We return only the top ``k_seeds`` as seeds,
+    but use the broader candidate pool to discover up to
+    ``file_outline_limit`` unique files to outline. This closes the "survey"
+    gap on codebases with many small files (e.g. Next.js App Router page
+    trees) where the top 5 seeds don't span the full relevant surface.
     """
     root_path = Path(root).resolve()
+    candidates: list[dict] = []      # broader candidate pool (for file discovery)
 
     # Fast path: exact qname lookup, skipping the search pipeline entirely.
     if ":" in query:
@@ -490,13 +498,20 @@ def context(
                     "decorators": direct["decorators"].split("\n") if direct["decorators"] else None,
                 }
             ]
+            candidates = seeds
             mode = "exact"
         else:
-            search_result = search_code(query, k=k_seeds, kind=kind, root=root_path, mode=mode)
-            seeds = search_result["results"]
+            search_result = search_code(
+                query, k=max(k_seeds, outline_discovery_k), kind=kind, root=root_path, mode=mode
+            )
+            candidates = search_result["results"]
+            seeds = candidates[:k_seeds]
     else:
-        search_result = search_code(query, k=k_seeds, kind=kind, root=root_path, mode=mode)
-        seeds = search_result["results"]
+        search_result = search_code(
+            query, k=max(k_seeds, outline_discovery_k), kind=kind, root=root_path, mode=mode
+        )
+        candidates = search_result["results"]
+        seeds = candidates[:k_seeds]
 
     if not seeds:
         return {
@@ -573,15 +588,15 @@ def context(
 
             enriched.append(entry)
 
-        # File outlines for the top N unique seed files — gives sibling context
-        # across the symbols most relevant to the query. For a question that
-        # spans multiple files (e.g. "LLM providers"), one seed's file isn't
-        # enough; we include up to 3 unique files' outlines.
+        # File outlines: walk the BROADER candidate pool (not just the top-K
+        # seeds the agent sees) to discover unique files. This is how survey
+        # questions — "list every route", "every agent class" — get coverage
+        # in one call even when the top-K seeds cluster in a couple of files.
         seen_files: list[str] = []
-        for seed in seeds:
-            if seed["file"] not in seen_files:
-                seen_files.append(seed["file"])
-            if len(seen_files) >= 5:
+        for cand in candidates:
+            if cand["file"] not in seen_files:
+                seen_files.append(cand["file"])
+            if len(seen_files) >= file_outline_limit:
                 break
         file_outlines: list[dict] = []
         for f in seen_files:

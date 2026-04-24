@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from neargrep.parsers.base import Parser
 from neargrep.parsers.python import PythonParser
+from neargrep.parsers.typescript import TypeScriptParser
 
-_PARSERS: list[Parser] = [PythonParser()]
+_PARSERS: list[Parser] = [PythonParser(), TypeScriptParser()]
 
 _BY_EXT: dict[str, Parser] = {
     ext: p for p in _PARSERS for ext in p.extensions

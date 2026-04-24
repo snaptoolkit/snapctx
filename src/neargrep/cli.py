@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from neargrep.api import context, expand, get_source, index_root, outline, search_code
+from neargrep.watch import run_watch
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -16,6 +17,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_index = sub.add_parser("index", help="Scan a repo and build/update the index.")
     p_index.add_argument("root", nargs="?", default=".", help="Repo root (default: cwd)")
+
+    p_watch = sub.add_parser(
+        "watch",
+        help="Watch a repo and re-index automatically on file save (debounced).",
+    )
+    p_watch.add_argument("root", nargs="?", default=".", help="Repo root (default: cwd)")
+    p_watch.add_argument(
+        "--debounce", type=float, default=0.5,
+        help="Seconds to wait after the last event before re-indexing (default 0.5).",
+    )
 
     p_search = sub.add_parser("search", help="Search symbols (lexical / vector / hybrid).")
     p_search.add_argument("query")
@@ -51,6 +62,14 @@ def main(argv: list[str] | None = None) -> int:
     p_context.add_argument("query")
     p_context.add_argument("--k-seeds", type=int, default=5)
     p_context.add_argument("--source-for-top", type=int, default=5)
+    p_context.add_argument(
+        "--file-outline-limit", type=int, default=8,
+        help="Max unique files to outline in the response (default: 8).",
+    )
+    p_context.add_argument(
+        "--outline-discovery-k", type=int, default=15,
+        help="Overfetch search to this many candidates for file discovery (default: 15).",
+    )
     p_context.add_argument("--mode", choices=["lexical", "vector", "hybrid"], default="hybrid")
     p_context.add_argument("--kind", default=None)
     p_context.add_argument("--root", default=".")
@@ -59,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "index":
         print(json.dumps(index_root(args.root), indent=2))
+        return 0
+    if args.cmd == "watch":
+        run_watch(Path(args.root), debounce_seconds=args.debounce)
         return 0
     if args.cmd == "search":
         print(json.dumps(
@@ -89,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.query,
                 k_seeds=args.k_seeds,
                 source_for_top=args.source_for_top,
+                file_outline_limit=args.file_outline_limit,
+                outline_discovery_k=args.outline_discovery_k,
                 mode=args.mode,
                 kind=args.kind,
                 root=args.root,
