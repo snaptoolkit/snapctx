@@ -34,9 +34,13 @@ jobs:
           key: hf-bge-small-en-v1.5
 
       - name: Create venv and install
+        # `uv venv --python X` explicitly overrides the repo's .python-version
+        # so the matrix actually tests both 3.11 and 3.12. We invoke pytest
+        # from the venv binary directly to avoid `uv run` re-syncing from
+        # .python-version and wiping the matrix-specific venv.
         run: |
           uv venv --python ${{ matrix.python-version }}
           uv pip install -e ".[dev]"
 
       - name: Run tests
-        run: uv run pytest -q
+        run: .venv/bin/pytest -q
