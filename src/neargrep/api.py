@@ -70,6 +70,64 @@ def _tokenize_query(q: str) -> list[str]:
     return [t for t in re.findall(r"\w+", q.lower()) if t]
 
 
+# Words that strongly signal a query is English prose rather than a symbol
+# lookup. Used by ``_classify_query`` to pick ranker weights — not stripped
+# from the query itself. We're conservative: only include very common "wh-"
+# words, auxiliaries, and a handful of prepositions. A snake_case identifier
+# like ``user_is_active`` contains "is" but we care about token-level matches,
+# not substring.
+_NL_STOPWORDS = frozenset({
+    "how", "what", "why", "where", "when", "which", "who", "whose",
+    "does", "do", "did", "is", "are", "was", "were", "be", "been", "being",
+    "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at",
+    "from", "with", "by", "about", "after", "before", "between", "into",
+    "through", "via", "over", "under", "that", "this", "these", "those",
+})
+
+
+_CAMEL_RE = __import__("re").compile(r"[a-z][A-Z]")
+
+
+def _looks_like_identifier(token: str) -> bool:
+    """Heuristic: does this token look like a source-code identifier?"""
+    if not token:
+        return False
+    if any(c in token for c in "._:/"):
+        return True          # dotted / qname-ish
+    if "_" in token and token.replace("_", "").isalnum():
+        return True          # snake_case
+    if token.isupper() and len(token) >= 2:
+        return True          # CONSTANT_CASE
+    if _CAMEL_RE.search(token):
+        return True          # camelCase / PascalCase
+    return False
+
+
+def _classify_query(query: str) -> str:
+    """Return 'identifier' | 'natural' | 'mixed'.
+
+    - ``identifier``: ≤ 2 tokens AND at least one looks like a source
+      identifier (camelCase, snake_case, dotted, or qname).
+    - ``natural``: 5+ tokens with at least one English stopword, OR 4+ tokens
+      with 2+ stopwords.
+    - ``mixed``: everything else (short freeform like "rate limit", or
+      medium-length hybrid queries).
+    """
+    raw_tokens = query.split()
+    tokens = _tokenize_query(query)
+    if not raw_tokens:
+        return "mixed"
+    # Identifier lookup: a dotted qname like ``apps.auth:login`` is a single
+    # raw word even though it contains multiple ``\w+`` matches, so count
+    # whitespace-split words here.
+    if len(raw_tokens) <= 2 and any(_looks_like_identifier(t) for t in raw_tokens):
+        return "identifier"
+    n_stop = sum(1 for t in tokens if t in _NL_STOPWORDS)
+    if (len(tokens) >= 5 and n_stop >= 1) or (len(tokens) >= 4 and n_stop >= 2):
+        return "natural"
+    return "mixed"
+
+
 # ---------- search_code ----------
 
 
@@ -114,7 +172,20 @@ def search_code(
             pairs = vec_pairs[:k]
         else:  # hybrid
             lex_pairs = [(r, -float(r["score"])) for r in lex_rows]
-            pairs = _rrf_merge(lex_pairs, vec_pairs, limit=k)
+            # Adapt RRF weights to query style. "How does the frontend …" is
+            # natural prose — trust the embedding model. "run_exscript" is an
+            # identifier lookup — BM25 nails it exactly. A short freeform
+            # "rate limit" falls in the middle.
+            qclass = _classify_query(query)
+            if qclass == "natural":
+                lw, vw = 0.5, 2.5
+            elif qclass == "identifier":
+                lw, vw = 1.5, 0.8
+            else:
+                lw, vw = 1.0, 1.5
+            pairs = _rrf_merge(
+                lex_pairs, vec_pairs, limit=k, lex_weight=lw, vec_weight=vw,
+            )
     finally:
         idx.close()
 
@@ -693,11 +764,9 @@ def _neighbor_entry(row, call_line: int) -> dict:
     }
 
 
-# Unresolved callees whose name is a common Python builtin are almost never
-# what an agent tracing a call graph cares about. Drop them from context()
-# output to keep the payload focused. (JS/TS doesn't get the same treatment:
-# its unresolved names like `this.foo` or `.map` carry useful structural
-# signal even without full resolution.)
+# Unresolved callees that boil down to a stdlib builtin or method-dispatch
+# primitive are almost never useful in a call graph. Drop them from context()
+# output so the agent focuses on domain code.
 _PY_BUILTIN_NOISE = frozenset({
     "print", "len", "range", "enumerate", "zip", "map", "filter",
     "sorted", "reversed", "any", "all", "min", "max", "sum", "abs",
@@ -709,15 +778,57 @@ _PY_BUILTIN_NOISE = frozenset({
     "classmethod",
 })
 
+# Common JS/TS method-dispatch names used as ``X.method()`` on arrays, strings,
+# Maps, Sets, Promises, etc. These show up as unresolved callees like
+# ``arr.forEach`` / ``map.set`` / ``channels.push`` and crowd out real edges.
+# We drop them regardless of what ``X`` is.
+_JS_METHOD_NOISE = frozenset({
+    # Array
+    "forEach", "map", "filter", "reduce", "reduceRight", "push", "pop",
+    "shift", "unshift", "slice", "splice", "concat", "join", "find",
+    "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "some",
+    "every", "includes", "indexOf", "lastIndexOf", "reverse", "sort",
+    "copyWithin", "fill", "at",
+    # String (overlaps with Array.includes/indexOf, fine)
+    "split", "trim", "trimStart", "trimEnd", "toLowerCase", "toUpperCase",
+    "replace", "replaceAll", "substring", "substr", "charAt", "charCodeAt",
+    "padStart", "padEnd", "startsWith", "endsWith", "repeat", "codePointAt",
+    "normalize", "localeCompare", "match", "matchAll", "search",
+    # Map / Set
+    "has", "get", "set", "delete", "clear", "keys", "values", "entries",
+    "add",
+    # Promise / thenable
+    "then", "catch", "finally",
+    # JSON
+    "parse", "stringify",
+    # Object (when seen as Object.X or x.X that aliases the same)
+    "assign", "fromEntries", "freeze", "isFrozen",
+    # Common globals, as `?:clearTimeout` (no dot)
+    "clearTimeout", "setTimeout", "clearInterval", "setInterval",
+    "queueMicrotask", "requestAnimationFrame", "cancelAnimationFrame",
+    "structuredClone",
+})
+
 
 def _is_builtin_noise(unresolved_qname: str) -> bool:
-    """`?:foo` → drop iff ``foo`` is a bare Python builtin."""
+    """True if this unresolved callee is Python/JS stdlib noise worth dropping.
+
+    Matches three patterns:
+      * ``?:foo`` where ``foo`` is a bare Python builtin (``len``, ``print``).
+      * ``?:foo`` where ``foo`` is a bare JS global (``clearTimeout``).
+      * ``?:X.method`` where ``method`` is a common JS method-dispatch name
+        on arrays, strings, Maps, Sets, Promises, etc. — ``X`` is usually a
+        local variable or parameter we can't resolve, and ``method``
+        identifies the call as stdlib dispatch regardless.
+    """
     if not unresolved_qname.startswith("?:"):
         return False
     name = unresolved_qname[2:]
-    if "." in name:
-        return False
-    return name in _PY_BUILTIN_NOISE
+    if "." not in name:
+        return name in _PY_BUILTIN_NOISE or name in _JS_METHOD_NOISE
+    # Dotted: drop if tail is a JS method-dispatch builtin.
+    tail = name.rpartition(".")[2]
+    return tail in _JS_METHOD_NOISE
 
 
 def _collect_neighbors(

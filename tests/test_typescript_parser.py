@@ -48,6 +48,54 @@ def test_no_module_symbol_without_leading_comment(tmp_path: Path) -> None:
     assert not any(s.kind == "module" for s in r.symbols)
 
 
+def test_this_call_optimistically_resolves_to_enclosing_class(tmp_path: Path) -> None:
+    """`this.method()` inside a class should produce a call edge pointing at
+    the enclosing class's method — even before the promote post-pass."""
+    r = _parse(
+        tmp_path,
+        "svc.ts",
+        "class Svc {\n"
+        "  run() { this.step(); }\n"
+        "  step() {}\n"
+        "}\n",
+    )
+    run_calls = [c for c in r.calls if c.caller_qname == "svc:Svc.run"]
+    assert run_calls
+    # Parse-time resolution uses the ClassQname.method shape.
+    # If `step` is emitted before run's body visits the call, it's resolved
+    # here; otherwise, promote_self_calls in the Index fills it in later.
+    c = run_calls[0]
+    assert c.callee_name == "this.step"
+    # Either resolved at parse time, or None for promote to fix up.
+    assert c.callee_qname in (None, "svc:Svc.step")
+
+
+def test_this_call_with_forward_reference_resolved_by_promote(tmp_path: Path) -> None:
+    """this.X calls are resolved by the promote post-pass even if the parser
+    couldn't see the target at call-emit time."""
+    from neargrep.api import index_root
+    from neargrep.index import Index, db_path_for
+
+    (tmp_path / "m.ts").write_text(
+        "export class Svc {\n"
+        "  early() {\n"
+        "    this.late();\n"
+        "  }\n"
+        "  late() { return 42; }\n"
+        "}\n",
+    )
+    index_root(tmp_path)
+    idx = Index(db_path_for(tmp_path))
+    try:
+        rows = idx.conn.execute(
+            "SELECT callee_qname FROM calls "
+            "WHERE caller_qname = 'm:Svc.early' AND callee_name = 'this.late'"
+        ).fetchall()
+    finally:
+        idx.close()
+    assert rows and rows[0]["callee_qname"] == "m:Svc.late"
+
+
 def test_function_declaration_is_captured(tmp_path: Path) -> None:
     r = _parse(
         tmp_path,

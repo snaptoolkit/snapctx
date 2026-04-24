@@ -80,6 +80,29 @@ def test_context_depth_1_flat_by_default_when_asked(tmp_path: Path) -> None:
     assert "callees" not in middle_entry
 
 
+def test_context_drops_js_method_dispatch_noise(tmp_path: Path) -> None:
+    """Unresolved `X.forEach`, `map.set`, `arr.push`, `promise.then`, etc. are
+    stdlib method dispatch — noise in a call graph, drop from context()."""
+    from neargrep.api import _is_builtin_noise
+
+    # JS dispatch on unknown objects → drop
+    assert _is_builtin_noise("?:arr.forEach")
+    assert _is_builtin_noise("?:ids.map")
+    assert _is_builtin_noise("?:map.set")
+    assert _is_builtin_noise("?:set.has")
+    assert _is_builtin_noise("?:channels.push")
+    assert _is_builtin_noise("?:promise.then")
+    assert _is_builtin_noise("?:JSON.parse")
+    assert _is_builtin_noise("?:clearTimeout")
+
+    # Domain method calls → keep
+    assert not _is_builtin_noise("?:redis.publish")
+    assert not _is_builtin_noise("?:conn.disconnect")
+    assert not _is_builtin_noise("?:logger.info")
+    # Resolved callees → not noise regardless
+    assert not _is_builtin_noise("module:function")
+
+
 def test_context_drops_builtin_noise_from_callees(tmp_path: Path) -> None:
     """Unresolved calls to Python builtins (print, len, …) are noise in a
     call graph — they shouldn't crowd out real neighbors."""

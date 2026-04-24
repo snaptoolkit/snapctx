@@ -540,8 +540,40 @@ class _Visitor:
     def _resolve_call(self, raw: str) -> str | None:
         """Resolve a callee string to a qname, using the import table and local defs."""
         head, _, tail = raw.partition(".")
-        # this.<x>() is method on current class -- unresolved heuristically
-        if head in ("this", "super"):
+        # this.X() and super.X() → optimistic guess against the enclosing class.
+        # Like Python's self.X, the actual method may be defined later in the
+        # class body than the caller; the demote pass nulls bogus guesses and
+        # the promote pass then re-resolves forward references.
+        if head == "this":
+            if "." in tail:
+                return None  # this.obj.method — attribute chain, don't guess
+            cls_qname = self._enclosing_class_qname()
+            if cls_qname is None or not tail:
+                return None
+            return f"{cls_qname}.{tail}"
+        if head == "super":
+            if "." in tail:
+                return None
+            cls_qname = self._enclosing_class_qname()
+            if cls_qname is None or not tail:
+                return None
+            # Find the class symbol to walk its bases.
+            cls_sym = next(
+                (s for s in self.symbols if s.qname == cls_qname and s.kind == "class"),
+                None,
+            )
+            if cls_sym and cls_sym.bases:
+                base = cls_sym.bases[0]
+                base_head, _, base_tail = base.partition(".")
+                if base_head in self._import_table:
+                    origin = self._import_table[base_head]
+                    src_mod, _, src_name = origin.partition(":")
+                    if src_mod.startswith("./") or src_mod.startswith("../"):
+                        src_mod = _resolve_relative_module(self.module, src_mod)
+                    parts = [src_name] + (base_tail.split(".") if base_tail else []) + [tail]
+                    return make_qname(src_mod, parts)
+                # Locally-defined base class.
+                return make_qname(self.module, [base_head, tail])
             return None
         if head in self._import_table:
             origin = self._import_table[head]  # "<src_module>:<orig_name>"
@@ -630,6 +662,15 @@ class _Visitor:
             if s.qname == top_qname:
                 return s.kind == "class"
         return False
+
+    def _enclosing_class_qname(self) -> str | None:
+        """Return the qname of the nearest enclosing class frame, or None."""
+        for i in range(len(self._stack), 0, -1):
+            cand = make_qname(self.module, self._stack[:i])
+            for s in self.symbols:
+                if s.qname == cand and s.kind == "class":
+                    return cand
+        return None
 
     def _render_callee(self, func_node) -> str | None:
         if func_node.type == "identifier":

@@ -13,6 +13,26 @@ def test_search_finds_refresh_method(indexed_root: Path) -> None:
     assert top["docstring"].startswith("Refresh")
 
 
+def test_query_classifier() -> None:
+    """Ranker should classify queries by shape and adjust weights."""
+    from neargrep.api import _classify_query
+
+    # Identifier-shape: camelCase, snake_case, dotted, CONSTANT
+    assert _classify_query("run_exscript") == "identifier"
+    assert _classify_query("SessionManager") == "identifier"
+    assert _classify_query("apps.auth:login") == "identifier"
+    assert _classify_query("DEFAULT_MODEL") == "identifier"
+    assert _classify_query("run_exscript task") == "identifier"
+
+    # Natural language: many tokens with stopwords.
+    assert _classify_query("how does the user authenticate") == "natural"
+    assert _classify_query("where is the rate limiter applied") == "natural"
+
+    # Mixed / short freeform: no obvious identifier shape, few stopwords.
+    assert _classify_query("rate limit") == "mixed"
+    assert _classify_query("throttle requests") == "mixed"
+
+
 def test_search_filters_by_kind(indexed_root: Path) -> None:
     out = search_code("session", kind="class", root=indexed_root)
     assert out["results"]
