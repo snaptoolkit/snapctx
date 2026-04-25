@@ -533,10 +533,14 @@ pytest
 - [x] **Multi-root fan-out** — queries from a parent dir hit every indexed sub-project in parallel and tag results with their `root` label
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 
-**Planned next:**
+**Planned next (snapctx core):**
 - [ ] **`snapctx serve` daemon** — long-running process holds the fastembed model + SQLite handle warm; CLI invocations talk to it over a Unix socket. Closes the ~400 ms cold-CLI gap so every query is 5–10 ms whether or not you have `snapctx watch` running. Lifecycle: auto-start on first query, idle-stop after N minutes, single-instance lock per repo.
 - [ ] **Lazy embedder loading** — quick win that lands today's cold-CLI cost at ~50 ms for `outline`, `source`, `expand`, and any `--mode lexical` query. Doesn't help hybrid `context`, but eliminates the model load for paths that don't need it.
 - [ ] **TS scope tracker** — parameter / local / import resolution so TS callee traces aren't stuck at depth 1.
+
+**Companion projects (snaptoolkit, planned):**
+- [ ] **`snapdocs`** — same idea as snapctx, applied to documentation. Index a project's docs (Markdown, MDX, RST, in-tree ADRs, even fetched third-party docs) into FTS5 + embeddings; expose a `snapdocs context "<question>"` that returns the most relevant doc passages, anchored at heading level, with the section above and below for grounding. The goal is the same as snapctx — one shell-out gives an agent enough context to answer a question without fanning out across 50 file reads — but the unit is a doc section, not a code symbol.
+- [ ] **`snappatch`** — symbol-level structured editing. Where snapctx *finds* the affected symbol and its dependencies, snappatch *edits* exactly that scope and nothing else. An agent calls `snappatch edit <qname> --instruction "..."` (or feeds a unified-symbol diff); snappatch loads the symbol body + the depth-1 callers/callees that constrain the change, applies the edit, and writes back **only the affected ranges** — no whole-file rewrites, no whitespace churn, no accidental re-formatting of unrelated code. Pairs naturally with snapctx (which already returns the qname + line range) so the agent never has to re-derive the bounds.
 
 ---
 
