@@ -258,6 +258,8 @@ Measured on a mixed-language monorepo — Python Django backend + Next.js fronte
 
 The cold-to-warm delta is almost entirely the fastembed ONNX model load. Inside `snapctx watch` or any long-running process, the model loads once and every subsequent query runs in single-digit ms.
 
+To eliminate cold-CLI latency entirely, a `snapctx serve` daemon is on the roadmap — it would hold the model + DB warm and let CLI invocations talk to it over a Unix socket, dropping per-query latency to ~5 ms across the board. Workarounds today: pin the index hot via `snapctx watch` (always-on file watcher), or use `--mode lexical` (skips the embedder; ~50 ms cold).
+
 Indexing is I/O- and embedding-bound. The three levers we tuned (on the way from 85 s → 10 s on the same repo): walker-level vendor-bundle filter, TS signature truncation to 240 chars so massive `const X: ColumnDef<T>[] = [...]` declarations don't bloat the index, and `fastembed` batch size = 4 (counter-intuitive, but smaller batches mean less ONNX padding waste on mixed-length texts).
 
 ---
@@ -468,8 +470,9 @@ pytest
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 
 **Planned next:**
+- [ ] **`snapctx serve` daemon** — long-running process holds the fastembed model + SQLite handle warm; CLI invocations talk to it over a Unix socket. Closes the ~400 ms cold-CLI gap so every query is 5–10 ms whether or not you have `snapctx watch` running. Lifecycle: auto-start on first query, idle-stop after N minutes, single-instance lock per repo.
+- [ ] **Lazy embedder loading** — quick win that lands today's cold-CLI cost at ~50 ms for `outline`, `source`, `expand`, and any `--mode lexical` query. Doesn't help hybrid `context`, but eliminates the model load for paths that don't need it.
 - [ ] **TS scope tracker** — parameter / local / import resolution so TS callee traces aren't stuck at depth 1.
-- [ ] **`snapctx serve` daemon** — holds model + DB warm so even cold-CLI calls are single-digit ms.
 
 ---
 
