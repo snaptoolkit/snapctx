@@ -232,6 +232,75 @@ def test_plain_js_file_parses(tmp_path: Path) -> None:
     assert "util:PI" in qnames
 
 
+def test_forwardref_component_indexed(tmp_path: Path) -> None:
+    """``const Button = React.forwardRef(...)`` — the standard shadcn/Radix
+    pattern. PascalCase + call expression at module scope is a wrapped
+    component; index it as kind='component'. Without this, every shadcn UI
+    primitive (Button, Input, Dialog, etc.) is invisible to search."""
+    r = _parse(
+        tmp_path,
+        "button.tsx",
+        "import * as React from 'react'\n"
+        "export interface ButtonProps { variant?: string }\n"
+        "const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(\n"
+        "  ({ variant }, ref) => <button ref={ref}>{variant}</button>\n"
+        ")\n"
+        "Button.displayName = 'Button'\n"
+        "export { Button }\n",
+    )
+    qnames = {s.qname: s for s in r.symbols}
+    assert "button:Button" in qnames
+    assert qnames["button:Button"].kind == "component"
+
+
+def test_memo_component_indexed(tmp_path: Path) -> None:
+    """``const Memoized = React.memo(...)`` — same pattern as forwardRef."""
+    r = _parse(
+        tmp_path,
+        "card.tsx",
+        "import * as React from 'react'\n"
+        "const Card = React.memo(({ title }: { title: string }) => <div>{title}</div>)\n"
+        "export { Card }\n",
+    )
+    qnames = {s.qname: s for s in r.symbols}
+    assert "card:Card" in qnames
+    assert qnames["card:Card"].kind == "component"
+
+
+def test_upper_case_constant_with_call_value_indexed(tmp_path: Path) -> None:
+    """``const COMMANDS = makeCommands()`` at module scope — UPPER_CASE
+    convention is strong enough to trust without inspecting the value
+    expression. Mirrors the Python parser's behavior for dispatch tables
+    and registries."""
+    r = _parse(
+        tmp_path,
+        "registry.ts",
+        "function makeCommands() { return [{ name: 'a' }, { name: 'b' }] }\n"
+        "const COMMANDS = makeCommands()\n"
+        "export { COMMANDS }\n",
+    )
+    qnames = {s.qname: s for s in r.symbols}
+    assert "registry:COMMANDS" in qnames
+    assert qnames["registry:COMMANDS"].kind == "constant"
+
+
+def test_camelcase_call_no_annotation_still_skipped(tmp_path: Path) -> None:
+    """``const buttonVariants = cva(...)`` — camelCase factory results
+    aren't auto-indexed (no convention strong enough to disambiguate from
+    private compute). Users wanting them indexed should add a type
+    annotation. This test pins the current behavior so we don't quietly
+    flood the index."""
+    r = _parse(
+        tmp_path,
+        "variants.ts",
+        "function cva(_: string) { return () => '' }\n"
+        "const buttonVariants = cva('inline-flex')\n",
+    )
+    qnames = {s.qname for s in r.symbols}
+    assert "variants:cva" in qnames           # the function definition
+    assert "variants:buttonVariants" not in qnames
+
+
 def test_index_tsx_collapses_to_directory(tmp_path: Path) -> None:
     r = _parse(
         tmp_path,

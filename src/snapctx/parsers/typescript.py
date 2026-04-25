@@ -466,32 +466,53 @@ class _Visitor:
                 self._stack.pop()
                 continue
 
-            # constant literal at module scope
-            if _is_module_scope(node) and _is_constant_like(value_node):
-                if name.isupper() or _has_type_annotation(name_node.parent):
-                    signature = self._text(decl).strip()
-                    # Large typed configs (e.g. `const cols: ColumnDef<T>[] = [...]`
-                    # in a React table) can have multi-KB RHS values. Truncate so
-                    # the stored signature and its FTS/embedding text stay small.
-                    if len(signature) > 240:
-                        signature = signature[:240].rstrip() + " …"
-                    self.symbols.append(
-                        Symbol(
-                            qname=make_qname(self.module, self._stack + [name]),
-                            kind="constant",
-                            language="typescript",
-                            signature=signature,
-                            docstring=self._jsdoc_before(node),
-                            file=self.file,
-                            line_start=node.start_point[0] + 1,
-                            line_end=node.end_point[0] + 1,
-                            parent_qname=make_qname(self.module, self._stack) if self._stack else None,
-                            decorators=[],
-                            bases=[],
-                            source_sha=self._sha_of_node(node),
-                        )
-                    )
-                    continue
+            # Module-scope const/let — three name conventions, three rules:
+            #
+            #   PascalCase + call_expression  → component (forwardRef, memo, lazy, ...)
+            #   UPPER_CASE                    → constant, any RHS (registries,
+            #                                   dispatch tables — trust the convention)
+            #   annotated + literal-like RHS  → constant (current behavior, looser
+            #                                   convention so we keep the literal gate)
+            #
+            # camelCase factory results (`const buttonVariants = cva(...)`) are
+            # left out deliberately — too easy to flood the index with private
+            # compute results. Users wanting them indexed can add an annotation.
+            if not _is_module_scope(node):
+                continue
+
+            is_pascal = bool(name) and name[0].isupper() and not name.isupper()
+            is_upper = name.isupper()
+            is_annotated_literal = (
+                _has_type_annotation(name_node.parent) and _is_constant_like(value_node)
+            )
+            is_pascal_wrapped = is_pascal and value_node.type == "call_expression"
+
+            if not (is_upper or is_annotated_literal or is_pascal_wrapped):
+                continue
+
+            kind = "component" if is_pascal_wrapped else "constant"
+            signature = self._text(decl).strip()
+            # Large typed configs (e.g. `const cols: ColumnDef<T>[] = [...]`
+            # in a React table) can have multi-KB RHS values. Truncate so
+            # the stored signature and its FTS/embedding text stay small.
+            if len(signature) > 240:
+                signature = signature[:240].rstrip() + " …"
+            self.symbols.append(
+                Symbol(
+                    qname=make_qname(self.module, self._stack + [name]),
+                    kind=kind,
+                    language="typescript",
+                    signature=signature,
+                    docstring=self._jsdoc_before(node),
+                    file=self.file,
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                    parent_qname=make_qname(self.module, self._stack) if self._stack else None,
+                    decorators=[],
+                    bases=[],
+                    source_sha=self._sha_of_node(node),
+                )
+            )
 
     def _handle_call(self, node) -> None:
         func_node = node.child_by_field_name("function")
