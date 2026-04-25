@@ -10,8 +10,8 @@ Design:
 - ``index_root`` is already incremental, so a trigger re-parses only the
   files whose SHA changed — typically <500 ms.
 
-The watcher is meant to run in its own terminal tab alongside a live MCP
-server. SQLite WAL mode handles the concurrent reader/writer.
+The watcher is meant to run in its own terminal tab so the index stays
+fresh while you work. SQLite WAL mode handles the concurrent reader/writer.
 """
 
 from __future__ import annotations

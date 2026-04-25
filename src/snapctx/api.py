@@ -1,7 +1,7 @@
 """The four context-retrieval operations on top of a populated index.
 
 Every function takes a repo root (Path) and returns a JSON-serializable dict.
-The CLI, and future MCP/ADK adapters, wrap these directly.
+The CLI wraps these directly.
 """
 
 from __future__ import annotations
@@ -981,4 +981,297 @@ def index_root(root: str | Path) -> dict:
         "symbols_indexed": symbol_count,
         "calls_demoted": demoted,
         "symbols_embedded": embedded,
+    }
+
+
+# ---------- multi-root wrappers ----------
+#
+# When the CLI is launched from a parent directory containing several
+# indexed sub-projects (a backend/ + frontend/ monorepo, say),
+# ``discover_roots`` returns more than one root. The wrappers below fan
+# out queries across roots, merge or route results, and tag each entry
+# with the root it came from so the caller knows which sub-project a
+# symbol lives in.
+#
+# All wrappers accept ``anchor=`` — the directory the user invoked the
+# command from. It's only used to compute friendly relative ``root``
+# labels in the response (e.g. ``backend`` vs ``frontend``); query
+# behavior is independent of it.
+
+
+def _run_in_parallel(fn, roots: list[Path]) -> list[tuple[Path, object]]:
+    """Run ``fn(root)`` for each root concurrently. Return (root, result) pairs.
+
+    SQLite + embedding workloads are largely I/O / C-bound, so a thread pool
+    is the right shape here. Errors per root surface as result dicts with
+    an ``error`` key — one bad root shouldn't poison the whole response.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    out: list[tuple[Path, object]] = []
+    if not roots:
+        return out
+    if len(roots) == 1:
+        try:
+            return [(roots[0], fn(roots[0]))]
+        except Exception as e:
+            return [(roots[0], {"error": f"{type(e).__name__}: {e}"})]
+
+    with ThreadPoolExecutor(max_workers=min(8, len(roots))) as pool:
+        futures = {pool.submit(fn, r): r for r in roots}
+        for fut in as_completed(futures):
+            r = futures[fut]
+            try:
+                out.append((r, fut.result()))
+            except Exception as e:
+                out.append((r, {"error": f"{type(e).__name__}: {e}"}))
+    # Stable order: same as ``roots``.
+    order = {r: i for i, r in enumerate(roots)}
+    out.sort(key=lambda pair: order.get(pair[0], 1_000_000))
+    return out
+
+
+def search_code_multi(
+    query: str,
+    roots: list[Path],
+    *,
+    k: int = 5,
+    kind: str | None = None,
+    mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
+    anchor: Path | None = None,
+) -> dict:
+    """Run ``search_code`` across multiple roots and merge by score.
+
+    Each result is tagged with ``root`` (a short label relative to ``anchor``)
+    so the caller can tell where a symbol lives. The merged list is sorted
+    by score across roots; only the global top-``k`` are returned.
+    """
+    from snapctx.roots import root_label
+
+    if not roots:
+        return {"query": query, "mode": mode, "results": [], "hint": "No indexed roots."}
+
+    per_root = _run_in_parallel(
+        lambda r: search_code(query, k=k, kind=kind, root=r, mode=mode),
+        roots,
+    )
+
+    merged: list[dict] = []
+    errors: list[dict] = []
+    for r, res in per_root:
+        if isinstance(res, dict) and "error" in res:
+            errors.append({"root": root_label(r, anchor), "error": res["error"]})
+            continue
+        label = root_label(r, anchor)
+        for item in res.get("results", []):
+            item = dict(item)
+            item["root"] = label
+            merged.append(item)
+
+    merged.sort(key=lambda x: -float(x.get("score", 0.0)))
+    top = merged[:k]
+
+    payload = {
+        "query": query,
+        "mode": mode,
+        "roots": [root_label(r, anchor) for r in roots],
+        "results": top,
+        "hint": _search_hint(top),
+    }
+    if errors:
+        payload["root_errors"] = errors
+    return payload
+
+
+def context_multi(
+    query: str,
+    roots: list[Path],
+    *,
+    k_seeds: int = 5,
+    source_for_top: int = 5,
+    expand_depth: int = 2,
+    neighbor_limit: int = 8,
+    body_char_cap: int = 2000,
+    file_outline_limit: int = 8,
+    outline_discovery_k: int = 15,
+    mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
+    kind: str | None = None,
+    anchor: Path | None = None,
+) -> dict:
+    """Run ``context`` across multiple roots and merge into one pack.
+
+    Each root produces its own seeds + file outlines. We combine, sort
+    seeds by score, keep global top ``k_seeds``, and concatenate file
+    outlines (each tagged with its root). Source bodies attached to
+    seeds in their per-root pass are preserved through the merge.
+    """
+    from snapctx.roots import root_label
+
+    if not roots:
+        return {
+            "query": query,
+            "mode": mode,
+            "seeds": [],
+            "hint": "No indexed roots.",
+            "token_estimate": 0,
+        }
+
+    per_root = _run_in_parallel(
+        lambda r: context(
+            query,
+            k_seeds=k_seeds,
+            source_for_top=source_for_top,
+            expand_depth=expand_depth,
+            neighbor_limit=neighbor_limit,
+            body_char_cap=body_char_cap,
+            file_outline_limit=file_outline_limit,
+            outline_discovery_k=outline_discovery_k,
+            mode=mode,
+            kind=kind,
+            root=r,
+        ),
+        roots,
+    )
+
+    all_seeds: list[dict] = []
+    all_outlines: list[dict] = []
+    errors: list[dict] = []
+    for r, res in per_root:
+        if isinstance(res, dict) and "error" in res:
+            errors.append({"root": root_label(r, anchor), "error": res["error"]})
+            continue
+        label = root_label(r, anchor)
+        for s in res.get("seeds", []):
+            s = dict(s)
+            s["root"] = label
+            all_seeds.append(s)
+        for fo in res.get("file_outlines", []):
+            fo = dict(fo)
+            fo["root"] = label
+            all_outlines.append(fo)
+
+    # Sort seeds by score (RRF scores are comparable across roots — same
+    # ranker, same fusion). Take global top-K.
+    all_seeds.sort(key=lambda s: -float(s.get("score", 0.0)))
+    top_seeds = all_seeds[:k_seeds]
+    # Renumber rank to reflect global position.
+    for i, s in enumerate(top_seeds, start=1):
+        s["rank"] = i
+
+    # Cap total file outlines too — same budget across roots.
+    capped_outlines = all_outlines[: file_outline_limit]
+
+    payload = {
+        "query": query,
+        "mode": mode,
+        "roots": [root_label(r, anchor) for r in roots],
+        "seeds": top_seeds,
+        "file_outlines": capped_outlines,
+    }
+    payload["token_estimate"] = _rough_token_count(payload)
+    payload["hint"] = (
+        "Multi-root context: results merged across "
+        f"{len(roots)} indexed sub-project(s). Each seed has a `root` field "
+        "showing which one it came from."
+    )
+    if errors:
+        payload["root_errors"] = errors
+    return payload
+
+
+def expand_multi(
+    qname: str,
+    roots: list[Path],
+    *,
+    direction: Literal["callees", "callers", "both"] = "callees",
+    depth: int = 1,
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``expand`` to whichever root contains ``qname``.
+
+    qnames are namespaced by module path, so collisions across sub-projects
+    are unusual; if they happen, the first root in ``roots`` order wins.
+    """
+    from snapctx.roots import root_label, route_by_qname
+
+    target = route_by_qname(qname, roots)
+    if target is None:
+        return {
+            "qname": qname,
+            "error": "not_found",
+            "hint": (
+                f"No symbol named {qname!r} in any of the "
+                f"{len(roots)} indexed root(s). Call search_code first to find valid qnames."
+            ),
+            "roots_tried": [root_label(r, anchor) for r in roots],
+        }
+    result = expand(qname, direction=direction, depth=depth, root=target)
+    result["root"] = root_label(target, anchor)
+    return result
+
+
+def get_source_multi(
+    qname: str,
+    roots: list[Path],
+    *,
+    with_neighbors: bool = False,
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``get_source`` to whichever root contains ``qname``."""
+    from snapctx.roots import root_label, route_by_qname
+
+    target = route_by_qname(qname, roots)
+    if target is None:
+        return {
+            "qname": qname,
+            "error": "not_found",
+            "hint": f"No symbol {qname!r} in any indexed root.",
+            "roots_tried": [root_label(r, anchor) for r in roots],
+        }
+    result = get_source(qname, with_neighbors=with_neighbors, root=target)
+    result["root"] = root_label(target, anchor)
+    return result
+
+
+def outline_multi(
+    path: str | Path,
+    roots: list[Path],
+    *,
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``outline`` to the root whose dir is the longest prefix of ``path``.
+
+    For relative paths, ``anchor`` is used as the resolution base; if no
+    root contains the resolved file, fall back to trying each root in
+    order (the first non-empty outline wins).
+    """
+    from snapctx.roots import root_label, route_by_path
+
+    p = Path(path)
+    if not p.is_absolute() and anchor is not None:
+        p = (anchor / p).resolve()
+    elif p.is_absolute():
+        p = p.resolve()
+
+    target = route_by_path(p, roots)
+    if target is not None:
+        result = outline(p, root=target)
+        result["root"] = root_label(target, anchor)
+        return result
+
+    # Fall back: try each root, return the first that has matches.
+    for r in roots:
+        result = outline(path, root=r)
+        if result.get("symbols"):
+            result["root"] = root_label(r, anchor)
+            return result
+
+    return {
+        "file": str(p),
+        "symbols": [],
+        "hint": (
+            f"No symbols indexed for {p} in any of the "
+            f"{len(roots)} root(s). Did you index the right project?"
+        ),
+        "roots_tried": [root_label(r, anchor) for r in roots],
     }

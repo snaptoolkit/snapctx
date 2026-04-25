@@ -1,4 +1,14 @@
-"""Command-line entry point: `snapctx <subcommand>`."""
+"""Command-line entry point: `snapctx <subcommand>`.
+
+The CLI is meant to be runnable from anywhere in a project tree:
+
+* From a directory inside an indexed repo, ``--root`` defaults to ``.``
+  and we walk up to the nearest enclosing ``.snapctx/index.db``.
+* From a parent that contains several indexed sub-projects (e.g. a
+  monorepo with ``backend/`` and ``frontend/`` each indexed
+  separately), queries fan out across all of them and results are
+  tagged with which sub-project they came from.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +17,43 @@ import json
 import sys
 from pathlib import Path
 
-from snapctx.api import context, expand, get_source, index_root, outline, search_code
+from snapctx.api import (
+    context,
+    context_multi,
+    expand,
+    expand_multi,
+    get_source,
+    get_source_multi,
+    index_root,
+    outline,
+    outline_multi,
+    search_code,
+    search_code_multi,
+)
+from snapctx.roots import discover_roots, root_label
 from snapctx.watch import run_watch
+
+
+def _resolve_roots(start: str) -> tuple[list[Path], Path]:
+    """Discover indexed roots reachable from ``start``.
+
+    Returns ``(roots, anchor)`` — the anchor is the directory the user
+    invoked the command from, used for relative ``root`` labels in the
+    response.
+    """
+    anchor = Path(start).resolve()
+    if anchor.is_file():
+        anchor = anchor.parent
+    return discover_roots(anchor), anchor
+
+
+def _no_index_error(start: str) -> str:
+    anchor = Path(start).resolve()
+    return (
+        f"No snapctx index found near {anchor}.\n"
+        f"  Walked up to the filesystem root and looked one level down — no .snapctx/index.db.\n"
+        f"  Run `snapctx index <path>` from a directory containing source code.\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -74,40 +119,112 @@ def main(argv: list[str] | None = None) -> int:
     p_context.add_argument("--kind", default=None)
     p_context.add_argument("--root", default=".")
 
+    p_roots = sub.add_parser(
+        "roots",
+        help="Show which indexed roots snapctx would query from this directory.",
+    )
+    p_roots.add_argument("root", nargs="?", default=".", help="Start path (default: cwd)")
+
     args = parser.parse_args(argv)
 
+    # ---- index / watch: per-root, no fan-out. If launched from a parent
+    # containing multiple indexed sub-projects, refuse and ask the user
+    # to pick one — indexing is a destructive write op and we shouldn't
+    # silently iterate over many sub-projects.
     if args.cmd == "index":
+        # Indexing creates the .snapctx dir if missing, so no discovery
+        # is needed — just operate on the explicit path.
         print(json.dumps(index_root(args.root), indent=2))
         return 0
+
     if args.cmd == "watch":
         run_watch(Path(args.root), debounce_seconds=args.debounce)
         return 0
+
+    if args.cmd == "roots":
+        roots, anchor = _resolve_roots(args.root)
+        out = {
+            "anchor": str(anchor),
+            "roots": [
+                {"label": root_label(r, anchor), "path": str(r)}
+                for r in roots
+            ],
+            "mode": "single" if len(roots) == 1 else ("multi" if roots else "none"),
+        }
+        if not roots:
+            out["hint"] = _no_index_error(args.root).strip()
+        print(json.dumps(out, indent=2))
+        return 0 if roots else 1
+
+    # ---- query commands: discover roots, fan out if multiple ----
+    roots, anchor = _resolve_roots(args.root)
+    if not roots:
+        sys.stderr.write(_no_index_error(args.root))
+        return 2
+
+    multi = len(roots) > 1
+
     if args.cmd == "search":
-        print(json.dumps(
-            search_code(
-                args.query, k=args.k, kind=args.kind, root=args.root, mode=args.mode
-            ),
-            indent=2,
-        ))
+        if multi:
+            result = search_code_multi(
+                args.query, roots, k=args.k, kind=args.kind,
+                mode=args.mode, anchor=anchor,
+            )
+        else:
+            result = search_code(
+                args.query, k=args.k, kind=args.kind, root=roots[0], mode=args.mode,
+            )
+        print(json.dumps(result, indent=2))
         return 0
+
     if args.cmd == "expand":
-        print(json.dumps(
-            expand(args.qname, direction=args.direction, depth=args.depth, root=args.root),
-            indent=2,
-        ))
+        if multi:
+            result = expand_multi(
+                args.qname, roots, direction=args.direction, depth=args.depth,
+                anchor=anchor,
+            )
+        else:
+            result = expand(
+                args.qname, direction=args.direction, depth=args.depth, root=roots[0],
+            )
+        print(json.dumps(result, indent=2))
         return 0
+
     if args.cmd == "outline":
-        print(json.dumps(outline(args.path, root=args.root), indent=2))
+        if multi:
+            result = outline_multi(args.path, roots, anchor=anchor)
+        else:
+            result = outline(args.path, root=roots[0])
+        print(json.dumps(result, indent=2))
         return 0
+
     if args.cmd == "source":
-        print(json.dumps(
-            get_source(args.qname, with_neighbors=args.with_neighbors, root=args.root),
-            indent=2,
-        ))
+        if multi:
+            result = get_source_multi(
+                args.qname, roots, with_neighbors=args.with_neighbors,
+                anchor=anchor,
+            )
+        else:
+            result = get_source(
+                args.qname, with_neighbors=args.with_neighbors, root=roots[0],
+            )
+        print(json.dumps(result, indent=2))
         return 0
+
     if args.cmd == "context":
-        print(json.dumps(
-            context(
+        if multi:
+            result = context_multi(
+                args.query, roots,
+                k_seeds=args.k_seeds,
+                source_for_top=args.source_for_top,
+                file_outline_limit=args.file_outline_limit,
+                outline_discovery_k=args.outline_discovery_k,
+                mode=args.mode,
+                kind=args.kind,
+                anchor=anchor,
+            )
+        else:
+            result = context(
                 args.query,
                 k_seeds=args.k_seeds,
                 source_for_top=args.source_for_top,
@@ -115,10 +232,9 @@ def main(argv: list[str] | None = None) -> int:
                 outline_discovery_k=args.outline_discovery_k,
                 mode=args.mode,
                 kind=args.kind,
-                root=args.root,
-            ),
-            indent=2,
-        ))
+                root=roots[0],
+            )
+        print(json.dumps(result, indent=2))
         return 0
 
     parser.error(f"unknown command: {args.cmd}")

@@ -22,7 +22,7 @@ An agent investigating an unfamiliar codebase burns tokens the same way every ti
 
 On a real 1,500-symbol codebase a question like "how does the parallel reader fetch verses for multiple versions?" takes **15–25 tool calls**, **30–80 k agent tokens**, and **60–120 seconds** of end-to-end agent time.
 
-`snapctx` answers the same question with **1 tool call** returning **2–5 k tokens** of structured context. That single call runs in **~5 ms warm** (inside a long-lived MCP server, ~400 ms from a cold CLI while the embedding model loads) — by doing the search → graph-walk → source-read → constant-alias resolution once, on a pre-built index, and returning a single structured payload the agent can reason about immediately. The agent's own reasoning time on top of that is still seconds, but the tool-call cost it pays drops by ~10× on calls and ~10× on tokens.
+`snapctx` answers the same question with **1 CLI call** returning **2–5 k tokens** of structured context. The call takes ~400 ms from a cold CLI (the embedding model loads once) — by doing the search → graph-walk → source-read → constant-alias resolution once, on a pre-built index, and returning a single structured payload the agent can reason about immediately. The agent's own reasoning time on top of that is still seconds, but the tool-call cost it pays drops by ~10× on calls and ~10× on tokens.
 
 ---
 
@@ -53,8 +53,9 @@ Uninstall: `uv tool uninstall snapctx`.
 # 1. Index a repo. Creates <repo>/.snapctx/index.db
 snapctx index /path/to/your/python/repo
 
-# 2. Ask a question — one shot, get everything back
-snapctx context "how does session authentication work" --root /path/to/your/python/repo
+# 2. Ask a question — from anywhere inside the repo
+cd /path/to/your/python/repo
+snapctx context "how does session authentication work"
 ```
 
 Output is JSON: top-5 matching symbols with full source for each, their callees and callers, and file outlines for the files involved. Usually enough to answer a non-trivial question without any follow-up.
@@ -62,83 +63,72 @@ Output is JSON: top-5 matching symbols with full source for each, their callees 
 For finer-grained operations (you'll rarely need them):
 
 ```bash
-snapctx search  "rate limit"  --root /repo          # just top-k ranked symbols
-snapctx outline src/auth.py   --root /repo          # nested symbol tree of a file
+snapctx search  "rate limit"
+snapctx outline src/auth.py
 snapctx expand  "auth:login"  --direction callers   # who calls this?
 snapctx source  "auth:login"  --with-neighbors      # body + callee signatures
 ```
 
-All commands accept `--root` (defaults to the current directory).
+### Auto-discovery: run from anywhere
+
+`snapctx` walks up from the current directory to find the nearest `.snapctx/index.db`, so you don't need to pass `--root` every time. From a deeply nested file, queries still hit the right index.
+
+### Multi-root: monorepos with separately indexed sub-projects
+
+If you've indexed several sub-projects under one parent (typical monorepo: a Python `backend/` and a Next.js `frontend/`), launch `snapctx` from the parent and queries fan out across all of them:
+
+```bash
+# Each sub-project has its own .snapctx/
+snapctx index ./backend
+snapctx index ./frontend
+
+# From the parent — no .snapctx of its own — queries hit both:
+snapctx context "session login flow"
+```
+
+Each result is tagged with a `root` field (`"backend"` / `"frontend"`) so the agent knows which sub-project a symbol lives in. `expand` and `source` route to whichever root holds the qname; `outline` routes by file path prefix.
+
+Use `snapctx roots` to see which indexes would be queried from your current directory.
 
 ---
 
-## Use it from an AI agent (MCP)
+## Use it from an AI agent
 
-`snapctx-mcp` is an MCP stdio server. Claude Code, Cursor, Cline, or any MCP client can call its five tools (`context`, `search`, `expand`, `outline`, `source`) natively in-session. The server loads the model once and each tool call runs in **5–10 ms warm**.
+snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Cursor's terminal mode, custom Agent SDK loops, etc.) can use it via `Bash` calls. Each invocation pays a ~400 ms cold-start (model load); for tight loops, run `snapctx watch` in another tab and the index stays fresh as you edit.
 
-### 1. Register the server
+### Tell the agent to reach for it first
 
-Drop this in `.mcp.json` at your repo root:
-
-```json
-{
-  "mcpServers": {
-    "snapctx": {
-      "command": "snapctx-mcp",
-      "args": ["--root", "."]
-    }
-  }
-}
-```
-
-Restart your MCP client. In Claude Code: `/mcp` should list `snapctx` with all five tools.
-
-### 2. Tell the agent to use it first
-
-Agents default to `Grep` + `Read` out of habit. Paste this into your project's `CLAUDE.md` / `AGENTS.md` so the agent actually reaches for snapctx:
+Agents default to `Grep` + `Read` out of habit. Paste this into your project's `CLAUDE.md` / `AGENTS.md`:
 
 ```markdown
 ## Code exploration
 
-This repo is indexed by `snapctx` (MCP server registered in `.mcp.json`). When you need to understand unfamiliar code, prefer these tools over `Grep`/`Read`:
+This repo is indexed by `snapctx`. When you need to understand unfamiliar code, prefer it over `Grep`/`Read`:
 
-**First move for any code-understanding question: `mcp__snapctx__context`.** Pass a natural-language query or identifier. Returns top symbols with source, a depth-2 call-path trace (callees-of-callees + callers-of-callers), and file outlines — typically enough to answer without follow-up.
+**First move for any code-understanding question:** `snapctx context "<query>"`. Pass a natural-language query or identifier. Returns top symbols with source, a depth-2 call-path trace (callees-of-callees + callers-of-callers), and file outlines — typically enough to answer without follow-up.
 
 **Drill-down** (only when `context` wasn't enough):
-- `mcp__snapctx__search` — ranked symbols; args: query, k, mode, kind.
-- `mcp__snapctx__expand` — call-graph neighborhood; args: qname, direction.
-- `mcp__snapctx__outline` — file symbol tree; args: path.
-- `mcp__snapctx__source` — full body of one symbol; args: qname.
+- `snapctx search "<query>"` — ranked symbols.
+- `snapctx expand <qname> --direction callers|callees` — call-graph neighborhood.
+- `snapctx outline <path>` — file symbol tree.
+- `snapctx source <qname> --with-neighbors` — full body of one symbol.
+
+snapctx walks up to find the right `.snapctx/index.db` automatically — no need to pass `--root`. From a parent containing several indexed sub-projects (monorepo with `backend/` + `frontend/`), queries fan out across all of them; each result is tagged with a `root` field telling you which sub-project it came from.
 
 Fall back to `Grep` only for: URL route strings, TODO comments, filename patterns. snapctx indexes symbols, not raw text.
 
-If you get a "no index" error: run `snapctx index <repo-root>` first.
+If you get a "no snapctx index found" error: run `snapctx index <repo-root>` first.
 ```
-
-See **[`docs/agent-setup.md`](docs/agent-setup.md)** for the full guide: other MCP clients, troubleshooting, per-project tuning.
-
-### 3. Verify
-
-```bash
-# Smoke-test the MCP server
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' | snapctx-mcp --root /path/to/repo --no-warm
-```
-
-Expect a JSON response with `"serverInfo": {"name": "snapctx", "version": "0.1.0"}`.
-
-### 4. First-run approval (Claude Code)
-
-On the first launch after `.mcp.json` appears, Claude Code prompts *"New MCP server found in .mcp.json: snapctx"* with three options. Pick **"Use this and all future MCP servers in this project"** (remembers approval for any future `.mcp.json` entries you add) or **"Use this MCP server"** (just this one). If you dismiss with `Esc`, Claude Code records it as skipped and `/mcp` will quietly omit the server until you edit `.mcp.json` (changing its mtime) and restart.
 
 ---
 
 ## Security model
 
-The MCP server is a read-heavy local tool with a tight sandbox. Worth understanding before approving the trust prompt.
+snapctx is a local read-mostly CLI. Worth understanding what it touches.
 
 **What it reads:**
-- Files under the `--root` you passed in `.mcp.json`, and only files the walker *indexed*:
-  - Python source only (`.py`, `.pyi`) — **not** `.env`, credentials, logs, binaries.
+- Files under the discovered `.snapctx` root, and only files the walker *indexed*:
+  - Python (`.py`, `.pyi`) and TypeScript (`.ts`, `.tsx`, `.js`, `.jsx`) source — **not** `.env`, credentials, logs, binaries.
   - Respects `.gitignore` — anything excluded there is invisible.
   - Skips `.git`, `.venv`, `node_modules`, `__pycache__`, `.snapctx`, `dist`, `build`, `.tox` by default.
 
@@ -149,17 +139,16 @@ The MCP server is a read-heavy local tool with a tight sandbox. Worth understand
 - None at runtime. The ONNX embedding model is downloaded once on first `snapctx index` (into `~/.cache/huggingface/`), then every future query runs fully offline.
 
 **Subprocess / code execution:**
-- None. The server doesn't shell out, doesn't `eval`, doesn't spawn Python subprocesses. It parses files with the stdlib `ast` module, runs SQLite queries, and does ONNX inference.
+- None. snapctx doesn't shell out, doesn't `eval`, doesn't spawn Python subprocesses. It parses files with the stdlib `ast` module + tree-sitter, runs SQLite queries, and does ONNX inference.
 
 **Path-traversal protection:**
-- `--root` is resolved once at server startup and baked into every tool call — the agent cannot override it.
 - `outline(path=…)` only returns symbols that exist in the index. A request for `/etc/passwd` or any other off-root path returns an empty result; no filesystem read happens.
-- `get_source(qname)` reads the file path stored on the matched symbol row, which the walker guarantees is under `--root`.
+- `source <qname>` reads the file path stored on the matched symbol row, which the walker guarantees is under the indexed root.
 
 **The one real caveat — same as `Read` / `Grep`:**
-Any secret hardcoded into a `.py` file (API keys in module constants, credentials baked into source) becomes discoverable via the semantic search. `Read` and `Grep` already expose that; snapctx just makes it *more* findable. Don't commit secrets. If legacy code has them, add the file to `.gitignore`.
+Any secret hardcoded into a source file (API keys in module constants, credentials baked into source) becomes discoverable via the semantic search. `Read` and `Grep` already expose that; snapctx just makes it *more* findable. Don't commit secrets. If legacy code has them, add the file to `.gitignore`.
 
-**Summary:** exposure = same set of files your agent could already `Read`/`Grep`, minus all non-Python content, minus anything in `.gitignore`. No network, no exec, no writes outside `.snapctx/`.
+**Summary:** exposure = same set of files your agent could already `Read`/`Grep`, minus all non-source content, minus anything in `.gitignore`. No network, no exec, no writes outside `.snapctx/`.
 
 ---
 
@@ -241,7 +230,7 @@ Numbers are **agent-level totals** (tool calls + tokens the agent consumed acros
 | composable hybrid | 15 | 41 k | 57 s | most thorough |
 | **`context()`** | **1** | 42 k | **30 s** | **complete with alias resolution** |
 
-Caveat: all blind-eval agents made one-off CLI calls (each paying ~400 ms cold-start). In an MCP setup where the server stays warm, the per-call latency drops to 5 ms — but the agent's own reasoning time (generating the follow-up calls it *didn't* need to make, writing the answer) is the same, so the wall-clock win for `context()` comes primarily from replacing **15 reasoning-and-call round-trips with 1**, not from making a single call faster.
+Caveat: all blind-eval agents made one-off CLI calls (each paying ~400 ms cold-start). The agent's own reasoning time (generating the follow-up calls it *didn't* need to make, writing the answer) dominates wall-clock, so the win for `context()` comes primarily from replacing **15 reasoning-and-call round-trips with 1**, not from making a single call faster.
 
 Highlights from the lexical-vs-vector head-to-head:
 
@@ -264,7 +253,7 @@ Measured on a mixed-language monorepo — Python Django backend + Next.js fronte
 | Warm in-process, hybrid `context()` (depth-2 trace) | **5–10 ms** |
 | Warm in-process, exact qname | **1–2 ms** |
 
-The cold-to-warm delta is almost entirely the fastembed ONNX model load. Inside an MCP server, the file watcher, or any long-running process, the model loads once and every subsequent query runs in single-digit ms.
+The cold-to-warm delta is almost entirely the fastembed ONNX model load. Inside `snapctx watch` or any long-running process, the model loads once and every subsequent query runs in single-digit ms.
 
 Indexing is I/O- and embedding-bound. The three levers we tuned (on the way from 85 s → 10 s on the same repo): walker-level vendor-bundle filter, TS signature truncation to 240 chars so massive `const X: ColumnDef<T>[] = [...]` declarations don't bloat the index, and `fastembed` batch size = 4 (counter-intuitive, but smaller batches mean less ONNX padding waste on mixed-length texts).
 
@@ -295,6 +284,17 @@ src = get_source("auth.service:login", with_neighbors=True, root="/path/to/repo"
 ```
 
 All functions return JSON-serializable dicts.
+
+For monorepos with separately indexed sub-projects, the multi-root variants — `context_multi`, `search_code_multi`, `expand_multi`, `outline_multi`, `get_source_multi` — accept a list of roots and merge / route results across them. The CLI uses these automatically when `discover_roots()` returns more than one root.
+
+```python
+from snapctx.api import context_multi
+from snapctx.roots import discover_roots
+
+roots = discover_roots(".")            # walks up first; falls back to one-level walk-down
+pack = context_multi("login session", roots, anchor=Path("."))
+# Each seed in pack["seeds"] has a "root" field tagging which sub-project it came from.
+```
 
 ---
 
@@ -416,16 +416,16 @@ snapctx/
     embeddings.py       # fastembed + bge-small-en-v1.5
     watch.py            # debounced file-watcher for auto re-index on save
     api.py              # search_code, expand, outline, get_source, context, index_root
+                        #   + multi-root variants (search_code_multi, context_multi, ...)
+    roots.py            # auto-discovery: walk-up to nearest .snapctx, walk-down for sub-projects
     cli.py              # argparse entry point (index, search, expand, outline,
-                        #                       source, context, watch)
-    adapters/
-      mcp.py            # MCP stdio server for Claude Code / Cursor / Cline
+                        #                       source, context, watch, roots)
   tests/
     fixtures/sample_pkg/
     test_parser.py  test_qname.py  test_api.py  test_constants.py
     test_demotion.py  test_embeddings.py  test_context.py  test_context_alias.py
-    test_incremental.py  test_mcp_adapter.py  test_typescript_parser.py
-    test_watch.py
+    test_incremental.py  test_typescript_parser.py
+    test_roots.py  test_multi_root.py  test_cli_discovery.py  test_watch.py
 ```
 
 Add a new language by implementing `parsers/base.Parser` for its extension and registering it in `parsers/registry`. The SQLite schema, ranking, `context()` logic, and post-ingest promote/demote passes are all language-agnostic — the TypeScript parser slotted in without any changes outside its own file.
@@ -440,7 +440,7 @@ uv pip install --group dev      # or: uv pip install pytest
 pytest
 ```
 
-70 tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
+100+ tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
 
 ---
 
@@ -459,14 +459,13 @@ pytest
 - [x] Fast path for exact-qname queries (~1 ms warm)
 - [x] Incremental indexing (SHA-based)
 - [x] Walker vendor-bundle / size filter — skips minified JS, source maps, `*-bundle.js`, `*.lib.js`, `*.standalone.js`, and anything over 250 KB
-- [x] **MCP stdio adapter** (`snapctx-mcp`) — exposes all five ops to Claude Code / Cursor / Cline via `.mcp.json`
+- [x] **Auto-discovery** — walks up from CWD to find the nearest `.snapctx/index.db`; falls back to one-level walk-down for monorepo parents with multiple indexed sub-projects
+- [x] **Multi-root fan-out** — queries from a parent dir hit every indexed sub-project in parallel and tag results with their `root` label
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 
 **Planned next:**
 - [ ] **TS scope tracker** — parameter / local / import resolution so TS callee traces aren't stuck at depth 1.
-- [ ] **Google ADK adapter** — thin `FunctionTool` wrappers over `snapctx.api` for in-process ADK agents.
 - [ ] **`snapctx serve` daemon** — holds model + DB warm so even cold-CLI calls are single-digit ms.
-- [ ] **Adaptive ranker** — stopword-filter / vector-weight bump for long natural-language queries; lexical-heavy for short identifier lookups.
 
 ---
 

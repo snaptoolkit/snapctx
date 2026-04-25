@@ -5,7 +5,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-.neargrep/
+.snapctx/
 .race/
 dist/
 build/
