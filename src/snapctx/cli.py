@@ -1,4 +1,4 @@
-"""Command-line entry point: `neargrep <subcommand>`."""
+"""Command-line entry point: `snapctx <subcommand>`."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ import json
 import sys
 from pathlib import Path
 
-from neargrep.api import context, expand, get_source, index_root, outline, search_code
-from neargrep.watch import run_watch
+from snapctx.api import context, expand, get_source, index_root, outline, search_code
+from snapctx.watch import run_watch
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="neargrep", description=__doc__)
+    parser = argparse.ArgumentParser(prog="snapctx", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_index = sub.add_parser("index", help="Scan a repo and build/update the index.")

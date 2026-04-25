@@ -25,9 +25,9 @@ from typing import Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from neargrep.api import index_root
-from neargrep.parsers.registry import supported_extensions
-from neargrep.walker import ALWAYS_SKIP
+from snapctx.api import index_root
+from snapctx.parsers.registry import supported_extensions
+from snapctx.walker import ALWAYS_SKIP
 
 
 class _IndexHandler(FileSystemEventHandler):
@@ -86,7 +86,7 @@ class _IndexHandler(FileSystemEventHandler):
             summary["_duration_ms"] = round((time.monotonic() - t0) * 1000, 1)
             self._on_fire(summary)
         except Exception as e:
-            print(f"[neargrep-watch] re-index failed: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"[snapctx-watch] re-index failed: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def run_watch(root: Path, *, debounce_seconds: float = 0.5) -> None:
@@ -107,7 +107,7 @@ def run_watch(root: Path, *, debounce_seconds: float = 0.5) -> None:
             parts.append(f"{summary['symbols_embedded']} embedded")
         detail = ", ".join(parts) or "no changes"
         print(
-            f"[neargrep-watch] re-index in {summary['_duration_ms']} ms — {detail}",
+            f"[snapctx-watch] re-index in {summary['_duration_ms']} ms — {detail}",
             file=sys.stderr,
         )
 
@@ -115,13 +115,13 @@ def run_watch(root: Path, *, debounce_seconds: float = 0.5) -> None:
     t0 = time.monotonic()
     init = index_root(root)
     print(
-        f"[neargrep-watch] initial index: {init['symbols_indexed']} symbols indexed, "
+        f"[snapctx-watch] initial index: {init['symbols_indexed']} symbols indexed, "
         f"{init['files_updated']} files updated, "
         f"{init['files_removed']} removed, "
         f"in {(time.monotonic() - t0) * 1000:.0f} ms",
         file=sys.stderr,
     )
-    print(f"[neargrep-watch] watching {root} (Ctrl-C to stop)", file=sys.stderr)
+    print(f"[snapctx-watch] watching {root} (Ctrl-C to stop)", file=sys.stderr)
 
     handler = _IndexHandler(root, on_fire=report, debounce_seconds=debounce_seconds)
     observer = Observer()
@@ -131,7 +131,7 @@ def run_watch(root: Path, *, debounce_seconds: float = 0.5) -> None:
         while observer.is_alive():
             observer.join(timeout=1.0)
     except KeyboardInterrupt:
-        print("[neargrep-watch] stopping", file=sys.stderr)
+        print("[snapctx-watch] stopping", file=sys.stderr)
     finally:
         observer.stop()
         observer.join()

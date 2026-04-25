@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.api import context
+from snapctx.api import context
 
 
 def test_context_returns_self_contained_pack(indexed_root: Path) -> None:
@@ -40,7 +40,7 @@ def test_context_empty_query_hint(indexed_root: Path) -> None:
 def test_context_depth_2_nests_call_path(tmp_path: Path) -> None:
     """expand_depth=2 should nest depth-2 callees under each depth-1 resolved
     callee, so an agent sees the full trace (A → B → C) in one payload."""
-    from neargrep.api import index_root
+    from snapctx.api import index_root
 
     (tmp_path / "m.py").write_text(
         "def leaf():\n"
@@ -64,7 +64,7 @@ def test_context_depth_2_nests_call_path(tmp_path: Path) -> None:
 
 def test_context_depth_1_flat_by_default_when_asked(tmp_path: Path) -> None:
     """expand_depth=1 leaves callees flat (no nested ``callees``)."""
-    from neargrep.api import index_root
+    from snapctx.api import index_root
 
     (tmp_path / "m.py").write_text(
         "def leaf(): return 3\n"
@@ -83,7 +83,7 @@ def test_context_depth_1_flat_by_default_when_asked(tmp_path: Path) -> None:
 def test_context_drops_js_method_dispatch_noise(tmp_path: Path) -> None:
     """Unresolved `X.forEach`, `map.set`, `arr.push`, `promise.then`, etc. are
     stdlib method dispatch — noise in a call graph, drop from context()."""
-    from neargrep.api import _is_builtin_noise
+    from snapctx.api import _is_builtin_noise
 
     # JS dispatch on unknown objects → drop
     assert _is_builtin_noise("?:arr.forEach")
@@ -106,7 +106,7 @@ def test_context_drops_js_method_dispatch_noise(tmp_path: Path) -> None:
 def test_context_drops_builtin_noise_from_callees(tmp_path: Path) -> None:
     """Unresolved calls to Python builtins (print, len, …) are noise in a
     call graph — they shouldn't crowd out real neighbors."""
-    from neargrep.api import index_root
+    from snapctx.api import index_root
 
     (tmp_path / "m.py").write_text(
         "def helper(): return 1\n"

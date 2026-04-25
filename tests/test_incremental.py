@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.api import index_root, outline
+from snapctx.api import index_root, outline
 
 
 def _write_repo(root: Path) -> None:

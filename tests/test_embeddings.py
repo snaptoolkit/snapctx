@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.api import index_root, search_code
+from snapctx.api import index_root, search_code
 
 
 def _write_repo(root: Path) -> None:

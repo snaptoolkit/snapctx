@@ -5,8 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from neargrep.api import index_root
-from neargrep.index import Index, db_path_for
+from snapctx.api import index_root
+from snapctx.index import Index, db_path_for
 
 
 def test_mixin_call_is_resolved_end_to_end(tmp_path: Path) -> None:

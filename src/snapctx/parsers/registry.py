@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from neargrep.parsers.base import Parser
-from neargrep.parsers.python import PythonParser
-from neargrep.parsers.typescript import TypeScriptParser
+from snapctx.parsers.base import Parser
+from snapctx.parsers.python import PythonParser
+from snapctx.parsers.typescript import TypeScriptParser
 
 _PARSERS: list[Parser] = [PythonParser(), TypeScriptParser()]
 

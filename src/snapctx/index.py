@@ -1,7 +1,7 @@
 """SQLite index: schema, incremental upsert, and FTS5 over symbols.
 
 Layout under a repo root:
-    .neargrep/
+    .snapctx/
       index.db       — symbols, calls, imports, files, symbols_fts
 
 All queries go through `Index`; callers never touch the raw connection.
@@ -16,8 +16,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from neargrep.qname import identifier_parts
-from neargrep.schema import Call, Import, ParseResult, Symbol
+from snapctx.qname import identifier_parts
+from snapctx.schema import Call, Import, ParseResult, Symbol
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -90,7 +90,7 @@ def sha_bytes(data: bytes) -> str:
 
 def db_path_for(root: Path) -> Path:
     """Resolve the standard SQLite path for a repo root."""
-    return (root / ".neargrep" / "index.db").resolve()
+    return (root / ".snapctx" / "index.db").resolve()
 
 
 class Index:

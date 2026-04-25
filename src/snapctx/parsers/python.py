@@ -11,8 +11,8 @@ import ast
 import hashlib
 from pathlib import Path
 
-from neargrep.qname import make_qname, python_module_path
-from neargrep.schema import Call, Import, ParseResult, Symbol
+from snapctx.qname import make_qname, python_module_path
+from snapctx.schema import Call, Import, ParseResult, Symbol
 
 
 class PythonParser:

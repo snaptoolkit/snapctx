@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the neargrep test suite."""
+"""Shared pytest fixtures for the snapctx test suite."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ def indexed_root(tmp_path: Path) -> Path:
     Returns the tmp root. Each test gets a fresh index, so they don't stomp
     on each other's state.
     """
-    from neargrep.api import index_root
+    from snapctx.api import index_root
 
     root = tmp_path / "repo"
     shutil.copytree(
         FIXTURE_SRC,
         root,
-        ignore=shutil.ignore_patterns(".neargrep", "__pycache__"),
+        ignore=shutil.ignore_patterns(".snapctx", "__pycache__"),
     )
     index_root(root)
     return root

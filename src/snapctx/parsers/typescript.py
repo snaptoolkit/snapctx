@@ -18,8 +18,8 @@ from pathlib import Path
 import tree_sitter_typescript
 from tree_sitter import Language, Parser
 
-from neargrep.qname import make_qname, typescript_module_path
-from neargrep.schema import Call, Import, ParseResult, Symbol
+from snapctx.qname import make_qname, typescript_module_path
+from snapctx.schema import Call, Import, ParseResult, Symbol
 
 _TS_LANG = Language(tree_sitter_typescript.language_typescript())
 _TSX_LANG = Language(tree_sitter_typescript.language_tsx())

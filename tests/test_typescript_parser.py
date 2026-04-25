@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.parsers.typescript import TypeScriptParser
+from snapctx.parsers.typescript import TypeScriptParser
 
 
 def _parse(tmp_path: Path, filename: str, source: str):
@@ -73,8 +73,8 @@ def test_this_call_optimistically_resolves_to_enclosing_class(tmp_path: Path) ->
 def test_this_call_with_forward_reference_resolved_by_promote(tmp_path: Path) -> None:
     """this.X calls are resolved by the promote post-pass even if the parser
     couldn't see the target at call-emit time."""
-    from neargrep.api import index_root
-    from neargrep.index import Index, db_path_for
+    from snapctx.api import index_root
+    from snapctx.index import Index, db_path_for
 
     (tmp_path / "m.ts").write_text(
         "export class Svc {\n"

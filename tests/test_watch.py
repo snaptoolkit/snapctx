@@ -6,9 +6,9 @@ import threading
 import time
 from pathlib import Path
 
-from neargrep.watch import _IndexHandler
-from neargrep.api import index_root
-from neargrep.index import Index, db_path_for
+from snapctx.watch import _IndexHandler
+from snapctx.api import index_root
+from snapctx.index import Index, db_path_for
 
 
 def test_debounce_coalesces_rapid_events(tmp_path: Path) -> None:

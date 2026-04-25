@@ -1,20 +1,20 @@
-"""MCP stdio adapter for neargrep.
+"""MCP stdio adapter for snapctx.
 
-Exposes neargrep's five context operations as MCP tools. Intended to be
+Exposes snapctx's five context operations as MCP tools. Intended to be
 launched by an MCP-speaking client (Claude Code, Cursor, Cline, custom Agent
 SDK loops) as a subprocess. The server stays resident for the session so
 the embedding model and SQLite handle are loaded once — every query after
 the first runs in 5–8 ms.
 
 Start:
-    neargrep-mcp --root /path/to/indexed/repo
+    snapctx-mcp --root /path/to/indexed/repo
 
 Typical client config (e.g. ``.mcp.json`` in a project):
 
     {
       "mcpServers": {
-        "neargrep": {
-          "command": "neargrep-mcp",
+        "snapctx": {
+          "command": "snapctx-mcp",
           "args": ["--root", "."]
         }
       }
@@ -37,8 +37,8 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 
-from neargrep.api import context, expand, get_source, outline, search_code
-from neargrep.index import db_path_for
+from snapctx.api import context, expand, get_source, outline, search_code
+from snapctx.index import db_path_for
 
 
 # --- tool descriptions ------------------------------------------------------
@@ -106,7 +106,7 @@ Call this only when `context`'s bundled source wasn't enough and you need the ex
 
 
 def make_server(root: Path) -> Server:
-    server: Server = Server("neargrep")
+    server: Server = Server("snapctx")
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
@@ -239,7 +239,7 @@ async def run_async(root: Path) -> None:
     server = make_server(root)
     async with stdio_server() as (read_stream, write_stream):
         init_opts = InitializationOptions(
-            server_name="neargrep",
+            server_name="snapctx",
             server_version="0.1.0",
             capabilities=server.get_capabilities(
                 notification_options=NotificationOptions(),
@@ -250,7 +250,7 @@ async def run_async(root: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="neargrep-mcp", description="neargrep MCP stdio server")
+    parser = argparse.ArgumentParser(prog="snapctx-mcp", description="snapctx MCP stdio server")
     parser.add_argument(
         "--root",
         default=".",
@@ -267,14 +267,14 @@ def main() -> None:
     db = db_path_for(root)
     if not db.exists():
         print(
-            f"[neargrep-mcp] warning: no index at {db}.\n"
-            f"                   Run `neargrep index {root}` once before querying.",
+            f"[snapctx-mcp] warning: no index at {db}.\n"
+            f"                   Run `snapctx index {root}` once before querying.",
             file=sys.stderr,
         )
 
     if not args.no_warm:
         # Load the embedder now so the first MCP tool call runs in single-digit ms.
-        from neargrep.embeddings import embed_texts
+        from snapctx.embeddings import embed_texts
 
         embed_texts(["warmup"])
 

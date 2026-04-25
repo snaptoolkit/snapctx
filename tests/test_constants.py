@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.parsers.python import PythonParser
+from snapctx.parsers.python import PythonParser
 
 
 def test_module_constants_captured(tmp_path: Path) -> None:

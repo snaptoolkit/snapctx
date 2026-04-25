@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.api import context, index_root
+from snapctx.api import context, index_root
 
 
 def test_alias_resolves_across_files(tmp_path: Path) -> None:

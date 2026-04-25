@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.parsers.python import PythonParser
+from snapctx.parsers.python import PythonParser
 
 
 def test_extracts_symbols_with_correct_qnames(tmp_path: Path) -> None:
@@ -76,8 +76,8 @@ def test_forward_self_call_resolves_after_post_pass(tmp_path: Path) -> None:
     the parse-time lookup can't find the target yet. The index's
     promote_self_calls post-pass should still resolve it once all symbols
     are in."""
-    from neargrep.api import index_root
-    from neargrep.index import Index, db_path_for
+    from snapctx.api import index_root
+    from snapctx.index import Index, db_path_for
 
     (tmp_path / "m.py").write_text(
         "class C:\n"

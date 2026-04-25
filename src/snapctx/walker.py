@@ -7,7 +7,7 @@ from typing import Iterator
 
 import pathspec
 
-from neargrep.parsers.registry import parser_for, supported_extensions
+from snapctx.parsers.registry import parser_for, supported_extensions
 
 ALWAYS_SKIP = {
     ".git", ".hg", ".svn",
@@ -15,7 +15,7 @@ ALWAYS_SKIP = {
     "node_modules", "bower_components", "vendor",
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     "dist", "build", ".tox",
-    ".neargrep",
+    ".snapctx",
 }
 
 # Filename suffixes that indicate bundled/minified third-party code. Parsing

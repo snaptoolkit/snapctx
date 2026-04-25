@@ -1,6 +1,6 @@
-# neargrep
+# snapctx
 
-[![CI](https://github.com/neargrep/neargrep/actions/workflows/ci.yml/badge.svg)](https://github.com/neargrep/neargrep/actions/workflows/ci.yml)
+[![CI](https://github.com/snapctx/snapctx/actions/workflows/ci.yml/badge.svg)](https://github.com/snapctx/snapctx/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
@@ -22,22 +22,22 @@ An agent investigating an unfamiliar codebase burns tokens the same way every ti
 
 On a real 1,500-symbol codebase a question like "how does the parallel reader fetch verses for multiple versions?" takes **15–25 tool calls**, **30–80 k agent tokens**, and **60–120 seconds** of end-to-end agent time.
 
-`neargrep` answers the same question with **1 tool call** returning **2–5 k tokens** of structured context. That single call runs in **~5 ms warm** (inside a long-lived MCP server, ~400 ms from a cold CLI while the embedding model loads) — by doing the search → graph-walk → source-read → constant-alias resolution once, on a pre-built index, and returning a single structured payload the agent can reason about immediately. The agent's own reasoning time on top of that is still seconds, but the tool-call cost it pays drops by ~10× on calls and ~10× on tokens.
+`snapctx` answers the same question with **1 tool call** returning **2–5 k tokens** of structured context. That single call runs in **~5 ms warm** (inside a long-lived MCP server, ~400 ms from a cold CLI while the embedding model loads) — by doing the search → graph-walk → source-read → constant-alias resolution once, on a pre-built index, and returning a single structured payload the agent can reason about immediately. The agent's own reasoning time on top of that is still seconds, but the tool-call cost it pays drops by ~10× on calls and ~10× on tokens.
 
 ---
 
 ## Install
 
-`neargrep` is a CLI tool. Install it globally with `uv tool` (isolated venv, entry points on `PATH`):
+`snapctx` is a CLI tool. Install it globally with `uv tool` (isolated venv, entry points on `PATH`):
 
 ```bash
-cd neargrep
+cd snapctx
 uv tool install --editable .
 ```
 
-That puts `neargrep` on your `PATH` (typically `~/.local/bin`).
+That puts `snapctx` on your `PATH` (typically `~/.local/bin`).
 
-Uninstall: `uv tool uninstall neargrep`.
+Uninstall: `uv tool uninstall snapctx`.
 
 ### Requirements
 
@@ -50,11 +50,11 @@ Uninstall: `uv tool uninstall neargrep`.
 ## 60-second quickstart
 
 ```bash
-# 1. Index a repo. Creates <repo>/.neargrep/index.db
-neargrep index /path/to/your/python/repo
+# 1. Index a repo. Creates <repo>/.snapctx/index.db
+snapctx index /path/to/your/python/repo
 
 # 2. Ask a question — one shot, get everything back
-neargrep context "how does session authentication work" --root /path/to/your/python/repo
+snapctx context "how does session authentication work" --root /path/to/your/python/repo
 ```
 
 Output is JSON: top-5 matching symbols with full source for each, their callees and callers, and file outlines for the files involved. Usually enough to answer a non-trivial question without any follow-up.
@@ -62,10 +62,10 @@ Output is JSON: top-5 matching symbols with full source for each, their callees 
 For finer-grained operations (you'll rarely need them):
 
 ```bash
-neargrep search  "rate limit"  --root /repo          # just top-k ranked symbols
-neargrep outline src/auth.py   --root /repo          # nested symbol tree of a file
-neargrep expand  "auth:login"  --direction callers   # who calls this?
-neargrep source  "auth:login"  --with-neighbors      # body + callee signatures
+snapctx search  "rate limit"  --root /repo          # just top-k ranked symbols
+snapctx outline src/auth.py   --root /repo          # nested symbol tree of a file
+snapctx expand  "auth:login"  --direction callers   # who calls this?
+snapctx source  "auth:login"  --with-neighbors      # body + callee signatures
 ```
 
 All commands accept `--root` (defaults to the current directory).
@@ -74,7 +74,7 @@ All commands accept `--root` (defaults to the current directory).
 
 ## Use it from an AI agent (MCP)
 
-`neargrep-mcp` is an MCP stdio server. Claude Code, Cursor, Cline, or any MCP client can call its five tools (`context`, `search`, `expand`, `outline`, `source`) natively in-session. The server loads the model once and each tool call runs in **5–10 ms warm**.
+`snapctx-mcp` is an MCP stdio server. Claude Code, Cursor, Cline, or any MCP client can call its five tools (`context`, `search`, `expand`, `outline`, `source`) natively in-session. The server loads the model once and each tool call runs in **5–10 ms warm**.
 
 ### 1. Register the server
 
@@ -83,36 +83,36 @@ Drop this in `.mcp.json` at your repo root:
 ```json
 {
   "mcpServers": {
-    "neargrep": {
-      "command": "neargrep-mcp",
+    "snapctx": {
+      "command": "snapctx-mcp",
       "args": ["--root", "."]
     }
   }
 }
 ```
 
-Restart your MCP client. In Claude Code: `/mcp` should list `neargrep` with all five tools.
+Restart your MCP client. In Claude Code: `/mcp` should list `snapctx` with all five tools.
 
 ### 2. Tell the agent to use it first
 
-Agents default to `Grep` + `Read` out of habit. Paste this into your project's `CLAUDE.md` / `AGENTS.md` so the agent actually reaches for neargrep:
+Agents default to `Grep` + `Read` out of habit. Paste this into your project's `CLAUDE.md` / `AGENTS.md` so the agent actually reaches for snapctx:
 
 ```markdown
 ## Code exploration
 
-This repo is indexed by `neargrep` (MCP server registered in `.mcp.json`). When you need to understand unfamiliar code, prefer these tools over `Grep`/`Read`:
+This repo is indexed by `snapctx` (MCP server registered in `.mcp.json`). When you need to understand unfamiliar code, prefer these tools over `Grep`/`Read`:
 
-**First move for any code-understanding question: `mcp__neargrep__context`.** Pass a natural-language query or identifier. Returns top symbols with source, a depth-2 call-path trace (callees-of-callees + callers-of-callers), and file outlines — typically enough to answer without follow-up.
+**First move for any code-understanding question: `mcp__snapctx__context`.** Pass a natural-language query or identifier. Returns top symbols with source, a depth-2 call-path trace (callees-of-callees + callers-of-callers), and file outlines — typically enough to answer without follow-up.
 
 **Drill-down** (only when `context` wasn't enough):
-- `mcp__neargrep__search` — ranked symbols; args: query, k, mode, kind.
-- `mcp__neargrep__expand` — call-graph neighborhood; args: qname, direction.
-- `mcp__neargrep__outline` — file symbol tree; args: path.
-- `mcp__neargrep__source` — full body of one symbol; args: qname.
+- `mcp__snapctx__search` — ranked symbols; args: query, k, mode, kind.
+- `mcp__snapctx__expand` — call-graph neighborhood; args: qname, direction.
+- `mcp__snapctx__outline` — file symbol tree; args: path.
+- `mcp__snapctx__source` — full body of one symbol; args: qname.
 
-Fall back to `Grep` only for: URL route strings, TODO comments, filename patterns. neargrep indexes symbols, not raw text.
+Fall back to `Grep` only for: URL route strings, TODO comments, filename patterns. snapctx indexes symbols, not raw text.
 
-If you get a "no index" error: run `neargrep index <repo-root>` first.
+If you get a "no index" error: run `snapctx index <repo-root>` first.
 ```
 
 See **[`docs/agent-setup.md`](docs/agent-setup.md)** for the full guide: other MCP clients, troubleshooting, per-project tuning.
@@ -121,14 +121,14 @@ See **[`docs/agent-setup.md`](docs/agent-setup.md)** for the full guide: other M
 
 ```bash
 # Smoke-test the MCP server
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' | neargrep-mcp --root /path/to/repo --no-warm
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' | snapctx-mcp --root /path/to/repo --no-warm
 ```
 
-Expect a JSON response with `"serverInfo": {"name": "neargrep", "version": "0.1.0"}`.
+Expect a JSON response with `"serverInfo": {"name": "snapctx", "version": "0.1.0"}`.
 
 ### 4. First-run approval (Claude Code)
 
-On the first launch after `.mcp.json` appears, Claude Code prompts *"New MCP server found in .mcp.json: neargrep"* with three options. Pick **"Use this and all future MCP servers in this project"** (remembers approval for any future `.mcp.json` entries you add) or **"Use this MCP server"** (just this one). If you dismiss with `Esc`, Claude Code records it as skipped and `/mcp` will quietly omit the server until you edit `.mcp.json` (changing its mtime) and restart.
+On the first launch after `.mcp.json` appears, Claude Code prompts *"New MCP server found in .mcp.json: snapctx"* with three options. Pick **"Use this and all future MCP servers in this project"** (remembers approval for any future `.mcp.json` entries you add) or **"Use this MCP server"** (just this one). If you dismiss with `Esc`, Claude Code records it as skipped and `/mcp` will quietly omit the server until you edit `.mcp.json` (changing its mtime) and restart.
 
 ---
 
@@ -140,13 +140,13 @@ The MCP server is a read-heavy local tool with a tight sandbox. Worth understand
 - Files under the `--root` you passed in `.mcp.json`, and only files the walker *indexed*:
   - Python source only (`.py`, `.pyi`) — **not** `.env`, credentials, logs, binaries.
   - Respects `.gitignore` — anything excluded there is invisible.
-  - Skips `.git`, `.venv`, `node_modules`, `__pycache__`, `.neargrep`, `dist`, `build`, `.tox` by default.
+  - Skips `.git`, `.venv`, `node_modules`, `__pycache__`, `.snapctx`, `dist`, `build`, `.tox` by default.
 
 **What it writes:**
-- Exactly one place: `<root>/.neargrep/index.db` (+ WAL/SHM sidecars). Nothing else on disk is ever touched.
+- Exactly one place: `<root>/.snapctx/index.db` (+ WAL/SHM sidecars). Nothing else on disk is ever touched.
 
 **Network:**
-- None at runtime. The ONNX embedding model is downloaded once on first `neargrep index` (into `~/.cache/huggingface/`), then every future query runs fully offline.
+- None at runtime. The ONNX embedding model is downloaded once on first `snapctx index` (into `~/.cache/huggingface/`), then every future query runs fully offline.
 
 **Subprocess / code execution:**
 - None. The server doesn't shell out, doesn't `eval`, doesn't spawn Python subprocesses. It parses files with the stdlib `ast` module, runs SQLite queries, and does ONNX inference.
@@ -157,9 +157,9 @@ The MCP server is a read-heavy local tool with a tight sandbox. Worth understand
 - `get_source(qname)` reads the file path stored on the matched symbol row, which the walker guarantees is under `--root`.
 
 **The one real caveat — same as `Read` / `Grep`:**
-Any secret hardcoded into a `.py` file (API keys in module constants, credentials baked into source) becomes discoverable via the semantic search. `Read` and `Grep` already expose that; neargrep just makes it *more* findable. Don't commit secrets. If legacy code has them, add the file to `.gitignore`.
+Any secret hardcoded into a `.py` file (API keys in module constants, credentials baked into source) becomes discoverable via the semantic search. `Read` and `Grep` already expose that; snapctx just makes it *more* findable. Don't commit secrets. If legacy code has them, add the file to `.gitignore`.
 
-**Summary:** exposure = same set of files your agent could already `Read`/`Grep`, minus all non-Python content, minus anything in `.gitignore`. No network, no exec, no writes outside `.neargrep/`.
+**Summary:** exposure = same set of files your agent could already `Read`/`Grep`, minus all non-Python content, minus anything in `.gitignore`. No network, no exec, no writes outside `.snapctx/`.
 
 ---
 
@@ -167,7 +167,7 @@ Any secret hardcoded into a `.py` file (API keys in module constants, credential
 
 ### Indexing (one-time per repo, re-runs incrementally)
 
-`neargrep index <root>` walks the repo respecting `.gitignore` and per-extension parsers, then builds three artifacts in `<root>/.neargrep/`:
+`snapctx index <root>` walks the repo respecting `.gitignore` and per-extension parsers, then builds three artifacts in `<root>/.snapctx/`:
 
 1. **`symbols` table** — every function, method, class, nested closure, interface, type alias, React component, module (with file-level docstring or leading JSDoc block), and module-level or class-level constant. Fields: qualified name (`module.path:Class.method`), kind, signature, docstring, file, line range, decorators, base classes, source SHA.
 2. **`calls` table** — caller → callee edges. Callee names are heuristically resolved against the caller's import table, with optimistic resolution through base-class MRO for `self.X` method calls. Calls in decorator arguments and default values are attributed to the module, not the decorated function (they run at definition time, not per-call). After full ingest, two post-passes fix up edges:
@@ -272,10 +272,10 @@ Indexing is I/O- and embedding-bound. The three levers we tuned (on the way from
 
 ## The full API
 
-Everything the CLI exposes is also available as a Python library. Import from `neargrep.api`:
+Everything the CLI exposes is also available as a Python library. Import from `snapctx.api`:
 
 ```python
-from neargrep.api import context, search_code, expand, outline, get_source, index_root
+from snapctx.api import context, search_code, expand, outline, get_source, index_root
 
 # Build or refresh the index
 index_root("/path/to/repo")
@@ -400,9 +400,9 @@ All functions return JSON-serializable dicts.
 ## Project layout
 
 ```
-neargrep/
+snapctx/
   pyproject.toml
-  src/neargrep/
+  src/snapctx/
     __init__.py
     schema.py           # Symbol / Call / Import / ParseResult dataclasses
     qname.py            # qname formatting + camel/snake splitting
@@ -459,13 +459,13 @@ pytest
 - [x] Fast path for exact-qname queries (~1 ms warm)
 - [x] Incremental indexing (SHA-based)
 - [x] Walker vendor-bundle / size filter — skips minified JS, source maps, `*-bundle.js`, `*.lib.js`, `*.standalone.js`, and anything over 250 KB
-- [x] **MCP stdio adapter** (`neargrep-mcp`) — exposes all five ops to Claude Code / Cursor / Cline via `.mcp.json`
-- [x] **File watcher** (`neargrep watch`) — debounced auto re-index on save, typical run ~5 ms warm
+- [x] **MCP stdio adapter** (`snapctx-mcp`) — exposes all five ops to Claude Code / Cursor / Cline via `.mcp.json`
+- [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 
 **Planned next:**
 - [ ] **TS scope tracker** — parameter / local / import resolution so TS callee traces aren't stuck at depth 1.
-- [ ] **Google ADK adapter** — thin `FunctionTool` wrappers over `neargrep.api` for in-process ADK agents.
-- [ ] **`neargrep serve` daemon** — holds model + DB warm so even cold-CLI calls are single-digit ms.
+- [ ] **Google ADK adapter** — thin `FunctionTool` wrappers over `snapctx.api` for in-process ADK agents.
+- [ ] **`snapctx serve` daemon** — holds model + DB warm so even cold-CLI calls are single-digit ms.
 - [ ] **Adaptive ranker** — stopword-filter / vector-weight bump for long natural-language queries; lexical-heavy for short identifier lookups.
 
 ---

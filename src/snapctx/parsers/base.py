@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from neargrep.schema import ParseResult
+from snapctx.schema import ParseResult
 
 
 class Parser(Protocol):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.qname import identifier_parts, make_qname, python_module_path, split_identifier
+from snapctx.qname import identifier_parts, make_qname, python_module_path, split_identifier
 
 
 def test_python_module_path_collapses_init(tmp_path: Path) -> None:

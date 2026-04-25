@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from neargrep.api import expand, get_source, outline, search_code
+from snapctx.api import expand, get_source, outline, search_code
 
 
 def test_search_finds_refresh_method(indexed_root: Path) -> None:
@@ -15,7 +15,7 @@ def test_search_finds_refresh_method(indexed_root: Path) -> None:
 
 def test_query_classifier() -> None:
     """Ranker should classify queries by shape and adjust weights."""
-    from neargrep.api import _classify_query
+    from snapctx.api import _classify_query
 
     # Identifier-shape: camelCase, snake_case, dotted, CONSTANT
     assert _classify_query("run_exscript") == "identifier"

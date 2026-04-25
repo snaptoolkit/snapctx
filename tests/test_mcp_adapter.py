@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from neargrep.api import index_root
+from snapctx.api import index_root
 
 FIXTURE_SRC = Path(__file__).parent / "fixtures"
 # Resolve the entry-point alongside the currently-running python. Works whether
 # the test is invoked via `pytest`, `uv run pytest`, or `uv tool`-installed.
-MCP_BIN = Path(sys.executable).parent / "neargrep-mcp"
+MCP_BIN = Path(sys.executable).parent / "snapctx-mcp"
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def live_server(tmp_path):
     """Index a copy of the fixture and yield a running MCP subprocess."""
     root = tmp_path / "repo"
     shutil.copytree(
-        FIXTURE_SRC, root, ignore=shutil.ignore_patterns(".neargrep", "__pycache__")
+        FIXTURE_SRC, root, ignore=shutil.ignore_patterns(".snapctx", "__pycache__")
     )
     index_root(root)
 

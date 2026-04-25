@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "neargrep"
+name = "snapctx"
 version = "0.1.0"
 description = "Fast, structured codebase context for AI agents — symbol graph + lexical search over Python (and more)."
 readme = "README.md"
@@ -24,16 +24,16 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [project.urls]
-Homepage = "https://github.com/neargrep/neargrep"
-Repository = "https://github.com/neargrep/neargrep"
-Issues = "https://github.com/neargrep/neargrep/issues"
+Homepage = "https://github.com/snapctx/snapctx"
+Repository = "https://github.com/snapctx/snapctx"
+Issues = "https://github.com/snapctx/snapctx/issues"
 
 [project.scripts]
-neargrep = "neargrep.cli:main"
-neargrep-mcp = "neargrep.adapters.mcp:main"
+snapctx = "snapctx.cli:main"
+snapctx-mcp = "snapctx.adapters.mcp:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/neargrep"]
+packages = ["src/snapctx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,7 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import Literal
 
-from neargrep.index import Index, db_path_for
+from snapctx.index import Index, db_path_for
 
 # A response chunk roughly this size — used to decide when to truncate.
 DEFAULT_RESULT_BUDGET = 2000   # tokens, approximate (4 chars ≈ 1 token)
@@ -23,7 +23,7 @@ def _open(root: Path) -> Index:
     db = db_path_for(root)
     if not db.exists():
         raise FileNotFoundError(
-            f"No index at {db}. Run `neargrep index {root}` first."
+            f"No index at {db}. Run `snapctx index {root}` first."
         )
     return Index(db)
 
@@ -162,7 +162,7 @@ def search_code(
 
         vec_pairs: list[tuple] = []
         if mode in ("vector", "hybrid"):
-            from neargrep.embeddings import embed_texts
+            from snapctx.embeddings import embed_texts
             qvec = embed_texts([query])[0]
             vec_pairs = idx.vector_search(qvec, limit=overfetch, kind=kind)
 
@@ -410,7 +410,7 @@ def outline(path: str | Path, root: str | Path = ".") -> dict:
         return {
             "file": file_str,
             "symbols": [],
-            "hint": f"No symbols indexed for {file_str}. Did you run `neargrep index` on this root?",
+            "hint": f"No symbols indexed for {file_str}. Did you run `snapctx index` on this root?",
         }
 
     by_qname = {row["qname"]: row for row in rows}
@@ -908,9 +908,9 @@ def index_root(root: str | Path) -> dict:
     Incremental: files whose SHA matches the stored value are skipped.
     Returns a summary dict with counts.
     """
-    from neargrep.index import sha_bytes
-    from neargrep.parsers.registry import parser_for
-    from neargrep.walker import iter_source_files
+    from snapctx.index import sha_bytes
+    from snapctx.parsers.registry import parser_for
+    from snapctx.walker import iter_source_files
 
     root_path = Path(root).resolve()
     idx = Index(db_path_for(root_path))
@@ -960,7 +960,7 @@ def index_root(root: str | Path) -> dict:
         # Post-pass 2: embed any new symbols that don't yet have vectors.
         missing = idx.symbols_without_vectors()
         if missing:
-            from neargrep.embeddings import embed_texts, symbol_text_for_embedding
+            from snapctx.embeddings import embed_texts, symbol_text_for_embedding
 
             texts = [
                 symbol_text_for_embedding(m["qname"], m["signature"], m["docstring"])

@@ -65,7 +65,7 @@ def _write_synthetic_repo(root: Path, *, n_files: int = 500, symbols_per_file: i
 
 def test_cold_index_stays_under_30s(tmp_path: Path) -> None:
     """500-file synthetic repo indexes in well under 30 s cold."""
-    from neargrep.api import index_root
+    from snapctx.api import index_root
 
     _write_synthetic_repo(tmp_path, n_files=500, symbols_per_file=10)
     t0 = time.monotonic()
@@ -82,7 +82,7 @@ def test_cold_index_stays_under_30s(tmp_path: Path) -> None:
 
 def test_warm_context_under_250ms(tmp_path: Path) -> None:
     """After a warmup call, a hybrid context() returns in under 250 ms."""
-    from neargrep.api import context, index_root
+    from snapctx.api import context, index_root
 
     _write_synthetic_repo(tmp_path, n_files=500, symbols_per_file=10)
     index_root(tmp_path)
