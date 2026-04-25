@@ -13,6 +13,66 @@ def test_search_finds_refresh_method(indexed_root: Path) -> None:
     assert top["docstring"].startswith("Refresh")
 
 
+def test_exact_name_token() -> None:
+    """Single identifier-shaped tokens trigger the name-match bonus; multi-word
+    queries don't."""
+    from snapctx.api._ranking import _exact_name_token
+
+    assert _exact_name_token("Button") == "button"
+    assert _exact_name_token("url_for") == "url_for"
+    assert _exact_name_token("StateCreator") == "statecreator"
+    # Multi-word natural queries: no bonus.
+    assert _exact_name_token("how does session prepare") is None
+    assert _exact_name_token("rate limit") is None
+    # Single word that isn't identifier-shaped: still accepted (Button isn't
+    # camelCase but is a common identifier).
+    assert _exact_name_token("Foo") == "foo"
+    # Empty / single-char: rejected.
+    assert _exact_name_token("") is None
+    assert _exact_name_token("x") is None
+
+
+def test_rrf_name_match_bonus_promotes_canonical_def() -> None:
+    """Real bug from evaluating snapctx on flask: lexical FTS5 ranks five
+    ``test_url_for_*`` methods above ``flask.helpers:url_for`` because their
+    docstrings/signatures all contain the token. The name-match bonus pulls
+    the canonical definition back to #1."""
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str, file: str = "/repo/src/x.py") -> dict:
+        return {"qname": qname, "file": file}
+
+    # Lexical pretends url_for is buried under five test methods.
+    lex = [
+        (row("tests.t:TestUrlFor.test_url_for_with_anchor", "/repo/tests/t.py"), -6.9),
+        (row("tests.t:TestUrlFor.test_url_for_with_scheme", "/repo/tests/t.py"), -6.9),
+        (row("tests.t:TestUrlFor.test_url_for_with_self",   "/repo/tests/t.py"), -6.9),
+        (row("flask.helpers:url_for"),                                            -3.0),
+    ]
+    # Vector correctly puts the canonical def at #1.
+    vec = [
+        (row("flask.helpers:url_for"), 0.71),
+        (row("tests.t:TestUrlFor.test_url_for_with_self.index", "/repo/tests/t.py"), 0.70),
+    ]
+    merged = rrf_merge(lex, vec, limit=3, query="url_for")
+    assert merged[0][0]["qname"] == "flask.helpers:url_for"
+
+
+def test_rrf_no_query_no_bonus() -> None:
+    """Backwards compatibility: callers that don't pass ``query`` get the
+    plain RRF (only test penalty)."""
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str) -> dict:
+        return {"qname": qname, "file": "/x.py"}
+
+    lex = [(row("a:foo"), -3.0), (row("a:bar"), -2.0)]
+    vec = [(row("a:bar"), 0.7), (row("a:foo"), 0.6)]
+    merged = rrf_merge(lex, vec, limit=2)
+    # Without a query, ordering is the unbiased RRF (top of both lists wins).
+    assert {r["qname"] for r, _ in merged} == {"a:foo", "a:bar"}
+
+
 def test_query_classifier() -> None:
     """Ranker should classify queries by shape and adjust weights."""
     from snapctx.api import _classify_query

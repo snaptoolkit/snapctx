@@ -67,7 +67,9 @@ def search_code(
         else:  # hybrid
             lex_pairs = [(r, -float(r["score"])) for r in lex_rows]
             lw, vw = hybrid_weights(classify_query(query))
-            pairs = rrf_merge(lex_pairs, vec_pairs, limit=k, lex_weight=lw, vec_weight=vw)
+            pairs = rrf_merge(
+                lex_pairs, vec_pairs, limit=k, lex_weight=lw, vec_weight=vw, query=query
+            )
     finally:
         idx.close()
 

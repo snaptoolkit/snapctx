@@ -120,6 +120,7 @@ def rrf_merge(
     lex_weight: float = 1.0,
     vec_weight: float = 1.5,
     test_penalty: float = 0.6,
+    query: str | None = None,
 ):
     """Weighted Reciprocal Rank Fusion of two ranked lists of (row, score) tuples.
 
@@ -130,7 +131,15 @@ def rrf_merge(
         module ending in ``.tests`` or starting with ``test_`` get their RRF
         score multiplied by this factor. Agents almost never want a test as
         their top hit, but tests still appear (just demoted).
+
+    When ``query`` is a single identifier-shaped token (``Button``, ``url_for``,
+    ``StateCreator``), symbols whose simple name equals that token receive a
+    name-match bonus equivalent to a top-3 lexical hit. Without this, FTS5
+    BM25 over signature+docstring lets test methods or impl classes that
+    *reference* the identifier outrank the canonical definition.
     """
+    name_match_token = _exact_name_token(query)
+
     scores: dict[str, float] = {}
     kept: dict[str, object] = {}
     for pairs, weight in ((lexical_pairs, lex_weight), (vector_pairs, vec_weight)):
@@ -138,11 +147,46 @@ def rrf_merge(
             q = row["qname"]
             scores[q] = scores.get(q, 0.0) + weight / (k_fuse + rank)
             kept[q] = row
+    if name_match_token is not None:
+        # Scale the bonus to the larger of the two weights so an identifier
+        # query (lex_weight 1.5, vec_weight 0.8) gets a meaningful bump even
+        # when the lex side is buried by sibling tokens. Equivalent to ~a
+        # rank-1 hit on the dominant ranker; not enough to flip results when
+        # a name-match symbol is genuinely absent from both lists.
+        bonus = max(lex_weight, vec_weight) / (k_fuse + 1)
+        for q in list(scores):
+            if _simple_name(q) == name_match_token:
+                scores[q] += bonus
     for q, row in kept.items():
         if looks_like_test(q, row["file"]):
             scores[q] *= test_penalty
     ordered = sorted(scores.items(), key=lambda kv: -kv[1])
     return [(kept[q], s) for q, s in ordered[:limit]]
+
+
+def _exact_name_token(query: str | None) -> str | None:
+    """Return the lowercased token if ``query`` is a single identifier-shaped
+    word, else ``None``. Multi-word queries like "session prepare and send"
+    don't trigger the name-match bonus — only direct identifier lookups do."""
+    if not query:
+        return None
+    raw = query.strip().split()
+    if len(raw) != 1:
+        return None
+    if not looks_like_identifier(raw[0]):
+        # Plain words like ``Button`` aren't camelCase but still common
+        # identifier lookups; accept any single bare alphanumeric+underscore
+        # token that's at least two characters.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]+", raw[0]):
+            return None
+    return raw[0].lower()
+
+
+def _simple_name(qname: str) -> str:
+    """Last segment of a qname: ``app.auth:User.login`` → ``login``. Used for
+    the name-match bonus so dotted method qnames still match a bare query."""
+    tail = qname.split(":", 1)[-1]
+    return tail.rsplit(".", 1)[-1].lower()
 
 
 def looks_like_test(qname: str, file: str) -> bool:
