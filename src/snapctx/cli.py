@@ -47,13 +47,43 @@ def _resolve_roots(start: str) -> tuple[list[Path], Path]:
     return discover_roots(anchor), anchor
 
 
-def _no_index_error(start: str) -> str:
-    anchor = Path(start).resolve()
-    return (
-        f"No snapctx index found near {anchor}.\n"
-        f"  Walked up to the filesystem root and looked one level down — no .snapctx/index.db.\n"
-        f"  Run `snapctx index <path>` from a directory containing source code.\n"
+def _auto_index(anchor: Path) -> list[Path]:
+    """Index ``anchor`` from scratch and re-run discovery.
+
+    Called when a query command finds no existing index. Performs a cheap
+    pre-flight check first — if the directory has no source files we can
+    parse, return an empty list (caller surfaces an error) so we don't
+    leave a stub ``.snapctx/`` behind in unrelated directories.
+
+    All progress messages go to stderr; the query JSON stays clean on
+    stdout.
+    """
+    from snapctx.walker import iter_source_files
+
+    try:
+        next(iter(iter_source_files(anchor)))
+    except StopIteration:
+        sys.stderr.write(
+            f"No snapctx index near {anchor} and no source files to index.\n"
+            f"  snapctx indexes Python (.py, .pyi) and TypeScript (.ts, .tsx, .js, .jsx).\n"
+            f"  Run from a directory containing source code, or pass a path with `snapctx index <path>`.\n"
+        )
+        return []
+
+    sys.stderr.write(
+        f"No snapctx index at {anchor} — building one now (one-time cost; "
+        f"subsequent queries are fast).\n"
     )
+    try:
+        summary = index_root(anchor)
+    except Exception as e:
+        sys.stderr.write(f"Auto-index failed: {type(e).__name__}: {e}\n")
+        return []
+    sys.stderr.write(
+        f"Indexed {summary['symbols_indexed']} symbols across "
+        f"{summary['files_updated']} files. Querying...\n\n"
+    )
+    return discover_roots(anchor)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -152,15 +182,22 @@ def main(argv: list[str] | None = None) -> int:
             "mode": "single" if len(roots) == 1 else ("multi" if roots else "none"),
         }
         if not roots:
-            out["hint"] = _no_index_error(args.root).strip()
+            out["hint"] = (
+                f"No .snapctx/index.db found at or below {anchor}. "
+                f"Run a query (e.g. `snapctx context ...`) to auto-index, "
+                f"or `snapctx index <path>` explicitly."
+            )
         print(json.dumps(out, indent=2))
         return 0 if roots else 1
 
     # ---- query commands: discover roots, fan out if multiple ----
     roots, anchor = _resolve_roots(args.root)
     if not roots:
-        sys.stderr.write(_no_index_error(args.root))
-        return 2
+        # No index found anywhere reachable. Build one transparently so
+        # the user's first query "just works".
+        roots = _auto_index(anchor)
+        if not roots:
+            return 2
 
     multi = len(roots) > 1
 

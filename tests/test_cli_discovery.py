@@ -88,11 +88,15 @@ def test_cli_fans_out_when_multiple_children_indexed(tmp_path: Path) -> None:
     assert "frontend" in roots_in_results
 
 
-def test_cli_no_index_returns_helpful_error(tmp_path: Path) -> None:
-    """A directory with no index (and no parents/children with one) → exit 2 + stderr."""
+def test_cli_auto_indexes_when_no_index_present(tmp_path: Path) -> None:
+    """A directory with source files but no index → auto-index, then return real results."""
     bare = tmp_path / "bare"
     bare.mkdir()
-    (bare / "x.py").write_text("x = 1\n")
+    (bare / "auth.py").write_text(
+        "def verify_login(user, password):\n"
+        '    """Check the user credentials."""\n'
+        "    return True\n"
+    )
 
     buf = io.StringIO()
     err = io.StringIO()
@@ -100,13 +104,70 @@ def test_cli_no_index_returns_helpful_error(tmp_path: Path) -> None:
     sys.stdout, sys.stderr = buf, err
     try:
         with _at(bare):
-            code = main(["context", "anything"])
+            code = main(["context", "verify_login", "--mode", "lexical"])
     finally:
         sys.stdout, sys.stderr = real_out, real_err
 
+    assert code == 0
+    out = json.loads(buf.getvalue())
+    assert out["seeds"], out
+    assert out["seeds"][0]["qname"] == "auth:verify_login"
+    # The auto-index notice should have been printed to stderr.
+    assert "indexing now" in err.getvalue().lower() or "building one" in err.getvalue().lower()
+    # And the index should now exist on disk.
+    assert (bare / ".snapctx" / "index.db").exists()
+
+
+def test_cli_auto_index_subsequent_query_skips_indexing(tmp_path: Path) -> None:
+    """After the first auto-index, the second query should NOT re-print the
+    'no index — building' notice."""
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "auth.py").write_text("def verify_login(): return True\n")
+
+    err1 = io.StringIO()
+    real_err = sys.stderr
+    sys.stderr = err1
+    try:
+        with _at(bare):
+            main(["context", "verify_login", "--mode", "lexical"])
+    finally:
+        sys.stderr = real_err
+
+    err2 = io.StringIO()
+    sys.stderr = err2
+    try:
+        with _at(bare):
+            main(["context", "verify_login", "--mode", "lexical"])
+    finally:
+        sys.stderr = real_err
+
+    assert "building one" in err1.getvalue().lower() or "indexing now" in err1.getvalue().lower()
+    # No "indexing" message the second time.
+    assert "indexing" not in err2.getvalue().lower()
+    assert "building one" not in err2.getvalue().lower()
+
+
+def test_cli_no_source_files_does_not_create_empty_index(tmp_path: Path) -> None:
+    """Running a query in a directory with NO source files at all should
+    error cleanly without leaving an empty .snapctx/ behind."""
+    bare = tmp_path / "empty"
+    bare.mkdir()
+    # No .py / .ts files, just a plain text file.
+    (bare / "README.txt").write_text("nothing to see\n")
+
+    err = io.StringIO()
+    real_err = sys.stderr
+    sys.stderr = err
+    try:
+        with _at(bare):
+            code = main(["context", "anything"])
+    finally:
+        sys.stderr = real_err
+
     assert code == 2
-    assert "No snapctx index found" in err.getvalue()
-    assert "snapctx index" in err.getvalue()
+    assert "no source files" in err.getvalue().lower()
+    assert not (bare / ".snapctx").exists()
 
 
 def test_cli_roots_command_reports_discovery(tmp_path: Path) -> None:

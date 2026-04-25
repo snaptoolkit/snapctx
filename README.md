@@ -50,12 +50,15 @@ Uninstall: `uv tool uninstall snapctx`.
 ## 60-second quickstart
 
 ```bash
-# 1. Index a repo. Creates <repo>/.snapctx/index.db
-snapctx index /path/to/your/python/repo
-
-# 2. Ask a question — from anywhere inside the repo
-cd /path/to/your/python/repo
+# Just ask a question. snapctx auto-indexes the repo on first use.
+cd /path/to/your/repo
 snapctx context "how does session authentication work"
+```
+
+The first query in a fresh repo builds the index transparently (one-time cost — typically 5–10 s for a few hundred files; subsequent queries are ~400 ms cold, ~5 ms inside `snapctx watch`). To pre-build explicitly:
+
+```bash
+snapctx index /path/to/your/repo
 ```
 
 Output is JSON: top-5 matching symbols with full source for each, their callees and callers, and file outlines for the files involved. Usually enough to answer a non-trivial question without any follow-up.
@@ -460,6 +463,7 @@ pytest
 - [x] Incremental indexing (SHA-based)
 - [x] Walker vendor-bundle / size filter — skips minified JS, source maps, `*-bundle.js`, `*.lib.js`, `*.standalone.js`, and anything over 250 KB
 - [x] **Auto-discovery** — walks up from CWD to find the nearest `.snapctx/index.db`; falls back to one-level walk-down for monorepo parents with multiple indexed sub-projects
+- [x] **Auto-indexing on first query** — if no index is reachable, `snapctx context|search|expand|outline|source` builds one transparently before answering
 - [x] **Multi-root fan-out** — queries from a parent dir hit every indexed sub-project in parallel and tag results with their `root` label
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 
