@@ -31,8 +31,11 @@ def _at(path: Path):
         os.chdir(prev)
 
 
-def _run(argv: list[str]) -> tuple[int, dict | str]:
-    """Invoke main() and capture stdout. Returns (exit_code, parsed_json_or_raw)."""
+def _run(argv: list[str]) -> tuple[int, dict | str, str]:
+    """Invoke main() and capture stdout + stderr.
+
+    Returns ``(exit_code, parsed_json_or_raw_stdout, stderr_text)``.
+    """
     buf = io.StringIO()
     err = io.StringIO()
     real_out, real_err = sys.stdout, sys.stderr
@@ -43,9 +46,9 @@ def _run(argv: list[str]) -> tuple[int, dict | str]:
         sys.stdout, sys.stderr = real_out, real_err
     text = buf.getvalue()
     try:
-        return code, json.loads(text)
+        return code, json.loads(text), err.getvalue()
     except json.JSONDecodeError:
-        return code, text
+        return code, text, err.getvalue()
 
 
 def test_cli_walks_up_to_find_index(tmp_path: Path) -> None:
@@ -58,7 +61,7 @@ def test_cli_walks_up_to_find_index(tmp_path: Path) -> None:
     deep = repo / "a" / "b"
     deep.mkdir(parents=True)
     with _at(deep):
-        code, out = _run(["context", "hello", "--mode", "lexical"])
+        code, out, _ = _run(["context", "hello", "--mode", "lexical"])
     assert code == 0
     assert isinstance(out, dict)
     assert out["seeds"], out
@@ -78,7 +81,7 @@ def test_cli_fans_out_when_multiple_children_indexed(tmp_path: Path) -> None:
     index_root(frontend)
 
     with _at(parent):
-        code, out = _run(["search", "login", "-k", "5", "--mode", "lexical"])
+        code, out, _ = _run(["search", "login", "-k", "5", "--mode", "lexical"])
     assert code == 0
     assert isinstance(out, dict)
     assert set(out["roots"]) == {"backend", "frontend"}
@@ -113,7 +116,7 @@ def test_cli_auto_indexes_when_no_index_present(tmp_path: Path) -> None:
     assert out["seeds"], out
     assert out["seeds"][0]["qname"] == "auth:verify_login"
     # The auto-index notice should have been printed to stderr.
-    assert "indexing now" in err.getvalue().lower() or "building one" in err.getvalue().lower()
+    assert "building first index" in err.getvalue().lower()
     # And the index should now exist on disk.
     assert (bare / ".snapctx" / "index.db").exists()
 
@@ -142,10 +145,54 @@ def test_cli_auto_index_subsequent_query_skips_indexing(tmp_path: Path) -> None:
     finally:
         sys.stderr = real_err
 
-    assert "building one" in err1.getvalue().lower() or "indexing now" in err1.getvalue().lower()
-    # No "indexing" message the second time.
-    assert "indexing" not in err2.getvalue().lower()
-    assert "building one" not in err2.getvalue().lower()
+    assert "building first index" in err1.getvalue().lower()
+    # Second run finds the existing index → no bootstrap message.
+    assert "building first index" not in err2.getvalue().lower()
+
+
+def test_cli_query_picks_up_edits_via_incremental_refresh(tmp_path: Path) -> None:
+    """A query after an edit should see the new code automatically — the CLI
+    runs an incremental index_root on every query, so SHA changes get picked up.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "m.py").write_text("def alpha(): return 1\n")
+    index_root(repo)
+
+    # Edit: rename `alpha` → `beta`. Without auto-refresh, the next query
+    # would still find `alpha` in the stale index.
+    (repo / "m.py").write_text("def beta(): return 1\n")
+
+    with _at(repo):
+        code, out, stderr_text = _run(["search", "beta", "-k", "5", "--mode", "lexical"])
+
+    assert code == 0
+    assert isinstance(out, dict)
+    qnames = {r["qname"] for r in out["results"]}
+    assert "m:beta" in qnames, qnames
+    # User-visible signal that a refresh happened.
+    assert "refreshed index" in stderr_text.lower()
+
+
+def test_cli_query_no_change_is_silent(tmp_path: Path) -> None:
+    """When nothing has changed since the last index, the refresh runs but
+    stays quiet — no spurious '0 updated' chatter on every query."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "m.py").write_text("def alpha(): return 1\n")
+    index_root(repo)
+
+    err = io.StringIO()
+    real_err = sys.stderr
+    sys.stderr = err
+    try:
+        with _at(repo):
+            main(["search", "alpha", "--mode", "lexical"])
+    finally:
+        sys.stderr = real_err
+
+    assert "refreshed index" not in err.getvalue().lower()
+    assert "indexing" not in err.getvalue().lower()
 
 
 def test_cli_no_source_files_does_not_create_empty_index(tmp_path: Path) -> None:
@@ -182,7 +229,7 @@ def test_cli_roots_command_reports_discovery(tmp_path: Path) -> None:
     index_root(frontend)
 
     with _at(parent):
-        code, out = _run(["roots"])
+        code, out, _ = _run(["roots"])
     assert code == 0
     assert isinstance(out, dict)
     assert out["mode"] == "multi"
@@ -194,7 +241,7 @@ def test_cli_roots_command_no_index(tmp_path: Path) -> None:
     bare = tmp_path / "bare"
     bare.mkdir()
     with _at(bare):
-        code, out = _run(["roots"])
+        code, out, _ = _run(["roots"])
     assert code == 1
     assert isinstance(out, dict)
     assert out["mode"] == "none"
@@ -216,7 +263,7 @@ def test_cli_qname_routing_from_parent(tmp_path: Path, cmd: str) -> None:
     index_root(frontend)
 
     with _at(parent):
-        code, out = _run([cmd, "auth:verify"])
+        code, out, _ = _run([cmd, "auth:verify"])
     assert code == 0
     assert isinstance(out, dict)
     assert out.get("root") == "backend"

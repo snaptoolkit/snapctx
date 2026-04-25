@@ -103,16 +103,16 @@ def _resolve_roots(start: str) -> tuple[list[Path], Path]:
     return discover_roots(anchor), anchor
 
 
-def _auto_index(anchor: Path) -> list[Path]:
-    """Index ``anchor`` from scratch and re-run discovery.
+def _bootstrap_first_index(anchor: Path) -> list[Path]:
+    """Build a fresh index when nothing reachable from ``anchor`` is indexed.
 
-    Called when a query command finds no existing index. Performs a cheap
-    pre-flight check first — if the directory has no source files we can
+    Pre-flight check first — if the directory has no source files we can
     parse, return an empty list (caller surfaces an error) so we don't
     leave a stub ``.snapctx/`` behind in unrelated directories.
 
     All progress messages go to stderr; the query JSON stays clean on
-    stdout.
+    stdout. The first-ever invocation also triggers a fastembed model
+    download (~30 MB) which prints its own progress.
     """
     from snapctx.config import load_config
     from snapctx.walker import iter_source_files
@@ -129,19 +129,54 @@ def _auto_index(anchor: Path) -> list[Path]:
         return []
 
     sys.stderr.write(
-        f"No snapctx index at {anchor} — building one now (one-time cost; "
-        f"subsequent queries are fast).\n"
+        f"snapctx: building first index at {anchor} "
+        f"(downloads embedding model on first use; subsequent queries reuse it)...\n"
     )
     try:
         summary = index_root(anchor)
     except Exception as e:
-        sys.stderr.write(f"Auto-index failed: {type(e).__name__}: {e}\n")
+        sys.stderr.write(f"snapctx: first index failed: {type(e).__name__}: {e}\n")
         return []
     sys.stderr.write(
-        f"Indexed {summary['symbols_indexed']} symbols across "
-        f"{summary['files_updated']} files. Querying...\n\n"
+        f"snapctx: indexed {summary['symbols_indexed']} symbols across "
+        f"{summary['files_updated']} files.\n"
     )
     return discover_roots(anchor)
+
+
+def _refresh_indexes(roots: list[Path]) -> None:
+    """Run an incremental re-index on every discovered root before querying.
+
+    The index is SHA-keyed, so a no-op re-index is fast (~600 ms on a
+    cold CLI; near-zero in a warm process). When source files have
+    changed since the last query, this picks up the deltas transparently
+    so the user's query always reflects the current code.
+
+    Quiet on no-op (the latency itself signals "we checked"). One-line
+    summary on stderr when files were re-parsed or removed.
+    """
+    multi = len(roots) > 1
+    for r in roots:
+        try:
+            summary = index_root(r)
+        except Exception as e:
+            sys.stderr.write(
+                f"snapctx: re-index failed at {r}: {type(e).__name__}: {e}\n"
+            )
+            continue
+        updated = summary["files_updated"]
+        removed = summary["files_removed"]
+        if not (updated or removed):
+            continue
+        parts = []
+        if updated:
+            parts.append(f"{updated} updated")
+        if removed:
+            parts.append(f"{removed} removed")
+        label = f" ({r.name})" if multi else ""
+        sys.stderr.write(
+            f"snapctx: refreshed index{label} — {', '.join(parts)}\n"
+        )
 
 
 # ---------- argparse setup ----------
@@ -239,12 +274,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "roots":
         return _print_roots(args.root)
 
-    # Query commands: discover, auto-index if absent, dispatch.
+    # Query commands: discover, ensure index is fresh, dispatch.
     roots, anchor = _resolve_roots(args.root)
     if not roots:
-        roots = _auto_index(anchor)
+        roots = _bootstrap_first_index(anchor)
         if not roots:
             return 2
+    else:
+        # Incremental refresh — picks up edits since the last query so
+        # results always reflect current code. Cheap (SHA-skip) when
+        # nothing changed.
+        _refresh_indexes(roots)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
