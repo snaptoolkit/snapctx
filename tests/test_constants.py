@@ -51,3 +51,33 @@ def test_constant_referencing_another_name(tmp_path: Path) -> None:
     qnames = {s.qname for s in result.symbols if s.kind == "constant"}
     assert "m:PRIMARY_MODEL" in qnames
     assert "m:FALLBACK" in qnames
+
+
+def test_upper_case_constant_with_call_expression_indexed(tmp_path: Path) -> None:
+    """``COMMANDS = (Cmd("a"), Cmd("b"))`` — the value is a tuple of calls,
+    not a literal, but the UPPER_CASE name signals constant intent. We trust
+    the convention and index it. Without this, dispatch tables and registries
+    are invisible to search."""
+    (tmp_path / "m.py").write_text(
+        "class Cmd:\n"
+        "    def __init__(self, name): self.name = name\n"
+        "COMMANDS = (Cmd('a'), Cmd('b'))\n"
+        "BY_NAME = {c.name: c for c in COMMANDS}\n"
+    )
+    result = PythonParser().parse(tmp_path / "m.py", tmp_path)
+    qnames = {s.qname for s in result.symbols if s.kind == "constant"}
+    assert "m:COMMANDS" in qnames
+    assert "m:BY_NAME" in qnames
+
+
+def test_underscore_prefixed_upper_constant_indexed(tmp_path: Path) -> None:
+    """``_PRIVATE_REGISTRY = (...)`` — leading underscore is a visibility
+    convention, not a parsing concern. ``isupper()`` returns True for
+    ``_FOO`` (it ignores non-alpha chars), so it's already accepted."""
+    (tmp_path / "m.py").write_text(
+        "class T: pass\n"
+        "_REGISTRY = (T(), T())\n"
+    )
+    result = PythonParser().parse(tmp_path / "m.py", tmp_path)
+    qnames = {s.qname for s in result.symbols if s.kind == "constant"}
+    assert "m:_REGISTRY" in qnames

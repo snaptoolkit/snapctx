@@ -166,13 +166,17 @@ class _Visitor(ast.NodeVisitor):
             if not isinstance(tgt, ast.Name):
                 continue
             name = tgt.id
-            # UPPER_CASE names OR annotated module-level names are indexed.
-            # (Heuristic: `foo = bar()` at module scope isn't a constant.)
-            if not (name.isupper() or "_" in name and name.replace("_", "").isalpha() and name.isupper()) and annotation is None:
-                # allow single-word UPPER like "DEBUG", also mixed like "Pi" — but usually constants are UPPER
-                if not name.isupper():
+            # UPPER_CASE names → trust the convention, index any value.
+            # Annotated lowercase names → only if the value is literal-ish
+            #   (avoids `foo: int = compute()` polluting the index).
+            # Plain lowercase, no annotation → skip (just regular code).
+            if name.isupper():
+                pass  # UPPER_CASE is strong enough; accept tuples-of-calls,
+                      # dict/list/set comprehensions, anything bound to a name.
+            elif annotation is not None:
+                if not _is_literal_like(value):
                     continue
-            if not _is_literal_like(value):
+            else:
                 continue
             rendered_value = _render_annotation(value)
             if len(rendered_value) > 120:
