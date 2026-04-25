@@ -43,8 +43,8 @@ def load_gitignore(root: Path) -> pathspec.PathSpec:
     """
     gi = root / ".gitignore"
     if not gi.exists():
-        return pathspec.PathSpec.from_lines("gitwildmatch", [])
-    return pathspec.PathSpec.from_lines("gitwildmatch", gi.read_text().splitlines())
+        return pathspec.PathSpec.from_lines("gitignore", [])
+    return pathspec.PathSpec.from_lines("gitignore", gi.read_text().splitlines())
 
 
 def iter_source_files(
@@ -75,12 +75,12 @@ def iter_source_files(
 
     gitignore = load_gitignore(root) if cfg.respect_gitignore else None
     extra_include = (
-        pathspec.PathSpec.from_lines("gitwildmatch", cfg.extra_include)
+        pathspec.PathSpec.from_lines("gitignore", cfg.extra_include)
         if cfg.extra_include
         else None
     )
     extra_exclude = (
-        pathspec.PathSpec.from_lines("gitwildmatch", cfg.extra_exclude)
+        pathspec.PathSpec.from_lines("gitignore", cfg.extra_exclude)
         if cfg.extra_exclude
         else None
     )
