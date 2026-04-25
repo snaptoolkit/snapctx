@@ -93,6 +93,41 @@ Each result is tagged with a `root` field (`"backend"` / `"frontend"`) so the ag
 
 Use `snapctx roots` to see which indexes would be queried from your current directory.
 
+### Per-repo config (optional)
+
+Drop a `snapctx.toml` at the repo root to override walker defaults — extra skip directories, vendor-bundle filter, file-size cap, language enable list, glob include/exclude. Without a config file, behavior is unchanged.
+
+```toml
+# snapctx.toml — all keys optional. Defaults match the no-config behavior.
+
+[walker]
+# Add to the always-skip directory list (joined with .git, .venv,
+# node_modules, vendor, dist, build, ...).
+extra_skip_dirs = ["legacy", "third_party"]
+
+# Add filename suffixes to the vendor-bundle skip list (joined with
+# .min.js, .bundle.js, *-bundle.js, *.standalone.js, .map, ...).
+extra_skip_suffixes = [".generated.ts"]
+
+# Force-include paths even when .gitignore would skip them. Useful for
+# selectively indexing a single subtree of an otherwise-ignored vendor dir.
+extra_include = ["vendor/internal-fork/**"]
+
+# Force-exclude regardless of .gitignore.
+extra_exclude = ["docs/generated/**", "**/*.snapshot.tsx"]
+
+# Toggles (defaults match current behavior).
+skip_vendor_bundles = true       # filter .min.js / *-bundle.js / .map / ...
+respect_gitignore   = true       # honor .gitignore
+max_file_size       = 256000     # bytes; default 250 KiB
+
+# Restrict to specific parsers (default: every parser is active).
+# Valid values: "python", "typescript".
+languages = ["python", "typescript"]
+```
+
+Unknown keys are tolerated for forward-compatibility; type errors on known keys raise with the file path so they're easy to fix.
+
 ---
 
 ## Use it from an AI agent
@@ -423,6 +458,7 @@ snapctx/
     api.py              # search_code, expand, outline, get_source, context, index_root
                         #   + multi-root variants (search_code_multi, context_multi, ...)
     roots.py            # auto-discovery: walk-up to nearest .snapctx, walk-down for sub-projects
+    config.py           # snapctx.toml loader (WalkerConfig dataclass; tomllib-backed)
     cli.py              # argparse entry point (index, search, expand, outline,
                         #                       source, context, watch, roots)
   tests/
@@ -466,6 +502,7 @@ pytest
 - [x] Walker vendor-bundle / size filter — skips minified JS, source maps, `*-bundle.js`, `*.lib.js`, `*.standalone.js`, and anything over 250 KB
 - [x] **Auto-discovery** — walks up from CWD to find the nearest `.snapctx/index.db`; falls back to one-level walk-down for monorepo parents with multiple indexed sub-projects
 - [x] **Auto-indexing on first query** — if no index is reachable, `snapctx context|search|expand|outline|source` builds one transparently before answering
+- [x] **Per-repo config** — optional `snapctx.toml` at the root overrides walker defaults (skip dirs, vendor filter, file-size cap, glob include/exclude, language enable list); no config means no behavior change
 - [x] **Multi-root fan-out** — queries from a parent dir hit every indexed sub-project in parallel and tag results with their `root` label
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 

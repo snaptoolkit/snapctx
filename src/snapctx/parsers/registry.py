@@ -19,3 +19,23 @@ def parser_for(suffix: str) -> Parser | None:
 
 def supported_extensions() -> tuple[str, ...]:
     return tuple(_BY_EXT.keys())
+
+
+def extensions_for_languages(languages: frozenset[str] | None) -> tuple[str, ...]:
+    """Return the union of file extensions handled by the named languages.
+
+    ``languages=None`` means "every registered parser" — same result as
+    ``supported_extensions()``. Used by the walker to honor the
+    ``[walker].languages`` config knob.
+    """
+    if languages is None:
+        return supported_extensions()
+    out: list[str] = []
+    for p in _PARSERS:
+        if p.language in languages:
+            out.extend(p.extensions)
+    return tuple(out)
+
+
+def known_languages() -> tuple[str, ...]:
+    return tuple(p.language for p in _PARSERS)

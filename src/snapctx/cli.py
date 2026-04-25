@@ -58,10 +58,12 @@ def _auto_index(anchor: Path) -> list[Path]:
     All progress messages go to stderr; the query JSON stays clean on
     stdout.
     """
+    from snapctx.config import load_config
     from snapctx.walker import iter_source_files
 
+    cfg = load_config(anchor)
     try:
-        next(iter(iter_source_files(anchor)))
+        next(iter(iter_source_files(anchor, cfg.walker)))
     except StopIteration:
         sys.stderr.write(
             f"No snapctx index near {anchor} and no source files to index.\n"

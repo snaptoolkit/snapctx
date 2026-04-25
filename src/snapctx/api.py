@@ -905,14 +905,20 @@ def _rough_token_count(payload: dict) -> int:
 def index_root(root: str | Path) -> dict:
     """Index (or re-index) every supported source file under ``root``.
 
+    Reads ``<root>/snapctx.toml`` if present to override the walker's
+    skip lists, language enable list, or size cap. Without a config
+    file, behavior is identical to the pre-config version.
+
     Incremental: files whose SHA matches the stored value are skipped.
     Returns a summary dict with counts.
     """
+    from snapctx.config import load_config
     from snapctx.index import sha_bytes
     from snapctx.parsers.registry import parser_for
     from snapctx.walker import iter_source_files
 
     root_path = Path(root).resolve()
+    cfg = load_config(root_path)
     idx = Index(db_path_for(root_path))
     scanned = 0
     updated = 0
@@ -926,7 +932,7 @@ def index_root(root: str | Path) -> dict:
         # can clean up rows for files that have been deleted / renamed / moved
         # into .gitignore since the last index. Without this step, stale
         # symbols and call edges accumulate indefinitely.
-        walker_files = {str(f.resolve()) for f in iter_source_files(root_path)}
+        walker_files = {str(f.resolve()) for f in iter_source_files(root_path, cfg.walker)}
         db_files = {
             row["path"]
             for row in idx.conn.execute("SELECT path FROM files").fetchall()

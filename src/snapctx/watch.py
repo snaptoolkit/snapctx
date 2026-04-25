@@ -26,7 +26,8 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from snapctx.api import index_root
-from snapctx.parsers.registry import supported_extensions
+from snapctx.config import load_config
+from snapctx.parsers.registry import extensions_for_languages, supported_extensions
 from snapctx.walker import ALWAYS_SKIP
 
 
@@ -45,7 +46,15 @@ class _IndexHandler(FileSystemEventHandler):
         self._debounce = debounce_seconds
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
-        self._exts = set(supported_extensions())
+        cfg = load_config(root)
+        # Honor the [walker].languages knob so a Python-only project
+        # doesn't waste time triggering on stray .ts files.
+        self._exts = set(
+            extensions_for_languages(cfg.walker.languages)
+            if cfg.walker.languages is not None
+            else supported_extensions()
+        )
+        self._skip_dirs = ALWAYS_SKIP | set(cfg.walker.extra_skip_dirs)
 
     def on_any_event(self, event: FileSystemEvent) -> None:
         if event.is_directory:
@@ -66,7 +75,7 @@ class _IndexHandler(FileSystemEventHandler):
                 rel = p.relative_to(self.root)
             except ValueError:
                 continue  # outside the watched root
-            if any(part in ALWAYS_SKIP for part in rel.parts):
+            if any(part in self._skip_dirs for part in rel.parts):
                 continue
             self._schedule()
             return

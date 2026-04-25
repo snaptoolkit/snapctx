@@ -7,7 +7,12 @@ from typing import Iterator
 
 import pathspec
 
-from snapctx.parsers.registry import parser_for, supported_extensions
+from snapctx.config import WalkerConfig
+from snapctx.parsers.registry import (
+    extensions_for_languages,
+    parser_for,
+    supported_extensions,
+)
 
 ALWAYS_SKIP = {
     ".git", ".hg", ".svn",
@@ -20,19 +25,15 @@ ALWAYS_SKIP = {
 
 # Filename suffixes that indicate bundled/minified third-party code. Parsing
 # these produces noise (single-letter symbol names, thousands of collisions)
-# and they are never what a user is searching for.
-_SKIP_SUFFIXES = (
+# and they are never what a user is searching for. Joined with the user's
+# ``extra_skip_suffixes`` from snapctx.toml.
+_VENDOR_BUNDLE_SUFFIXES = (
     ".min.js", ".min.mjs", ".min.cjs", ".bundle.js", ".min.css",
     ".map",                                   # source maps
     ".worker.js",                             # web-worker bundles
     "-bundle.js", "-bundle.mjs",              # e.g. swagger-ui-bundle.js
     ".standalone.js", ".lib.js",              # e.g. redoc.standalone.js
 )
-
-# Max size (bytes) for a source file we'll parse. Any .js/.ts/.tsx over this
-# is almost certainly a vendored bundle (swagger, jquery, redoc, …) — real
-# hand-written code stays well under 250 KB even for the largest single files.
-_MAX_SOURCE_BYTES = 250 * 1024
 
 
 def load_gitignore(root: Path) -> pathspec.PathSpec:
@@ -46,29 +47,67 @@ def load_gitignore(root: Path) -> pathspec.PathSpec:
     return pathspec.PathSpec.from_lines("gitwildmatch", gi.read_text().splitlines())
 
 
-def iter_source_files(root: Path) -> Iterator[Path]:
-    """Yield source files under `root` that a parser can handle."""
+def iter_source_files(
+    root: Path, config: WalkerConfig | None = None
+) -> Iterator[Path]:
+    """Yield source files under ``root`` that a parser can handle.
+
+    ``config`` overrides the built-in defaults (skip dirs, vendor-bundle
+    filter, size cap, language enable list, gitignore behavior). When
+    ``None`` (the common case), behavior is unchanged from before the
+    config system existed.
+    """
+    cfg = config or WalkerConfig()
     root = root.resolve()
-    spec = load_gitignore(root)
-    exts = supported_extensions()
+
+    skip_dirs = ALWAYS_SKIP | set(cfg.extra_skip_dirs)
+    skip_suffixes = (
+        _VENDOR_BUNDLE_SUFFIXES + cfg.extra_skip_suffixes
+        if cfg.skip_vendor_bundles
+        else cfg.extra_skip_suffixes
+    )
+    enabled_exts = (
+        extensions_for_languages(cfg.languages)
+        if cfg.languages is not None
+        else supported_extensions()
+    )
+    enabled_exts_set = set(enabled_exts)
+
+    gitignore = load_gitignore(root) if cfg.respect_gitignore else None
+    extra_include = (
+        pathspec.PathSpec.from_lines("gitwildmatch", cfg.extra_include)
+        if cfg.extra_include
+        else None
+    )
+    extra_exclude = (
+        pathspec.PathSpec.from_lines("gitwildmatch", cfg.extra_exclude)
+        if cfg.extra_exclude
+        else None
+    )
 
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if any(part in ALWAYS_SKIP for part in path.relative_to(root).parts):
-            continue
         rel = path.relative_to(root)
-        if spec.match_file(str(rel)):
+        rel_str = str(rel)
+
+        if any(part in skip_dirs for part in rel.parts):
             continue
-        if path.suffix not in exts:
+        if extra_exclude is not None and extra_exclude.match_file(rel_str):
+            continue
+        if path.suffix not in enabled_exts_set:
             continue
         if parser_for(path.suffix) is None:
             continue
-        name = path.name
-        if any(name.endswith(suf) for suf in _SKIP_SUFFIXES):
+        if skip_suffixes and any(path.name.endswith(suf) for suf in skip_suffixes):
             continue
+        # gitignore is checked AFTER ``extra_include`` so the user can
+        # whitelist a subtree of an otherwise-ignored vendor dir.
+        if gitignore is not None and gitignore.match_file(rel_str):
+            if extra_include is None or not extra_include.match_file(rel_str):
+                continue
         try:
-            if path.stat().st_size > _MAX_SOURCE_BYTES:
+            if path.stat().st_size > cfg.max_file_size:
                 continue
         except OSError:
             continue
