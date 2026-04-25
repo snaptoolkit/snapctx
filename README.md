@@ -132,30 +132,57 @@ Unknown keys are tolerated for forward-compatibility; type errors on known keys 
 
 ## Use it from an AI agent
 
-snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Cursor's terminal mode, custom Agent SDK loops, etc.) can use it via `Bash` calls. Each invocation pays a ~400 ms cold-start (model load); for tight loops, run `snapctx watch` in another tab and the index stays fresh as you edit.
+snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Cursor's terminal mode, custom Agent SDK loops, etc.) can use it via `Bash` calls. The first query in a fresh repo auto-builds the index; every subsequent query runs an incremental refresh so results always reflect current code.
 
 ### Tell the agent to reach for it first
 
 Agents default to `Grep` + `Read` out of habit. Paste this into your project's `CLAUDE.md` / `AGENTS.md`:
 
 ```markdown
-## Code exploration
+## Code exploration with snapctx
 
-This repo is indexed by `snapctx`. When you need to understand unfamiliar code, prefer it over `Grep`/`Read`:
+For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It's faster, more accurate, and uses ~10× fewer tokens than `Grep` + `Read` chains.
 
-**First move for any code-understanding question:** `snapctx context "<query>"`. Pass a natural-language query or identifier. Returns top symbols with source, a depth-2 call-path trace (callees-of-callees + callers-of-callers), and file outlines — typically enough to answer without follow-up.
+**Why it works**: snapctx parses the codebase into a symbol graph (functions, classes, components, constants, calls, imports), runs hybrid lexical+semantic search, and returns top symbols with source bodies, a depth-2 call-path trace (callees-of-callees + callers-of-callers), constant-alias resolution, and file outlines — usually enough to answer in one call.
 
-**Drill-down** (only when `context` wasn't enough):
-- `snapctx search "<query>"` — ranked symbols.
-- `snapctx expand <qname> --direction callers|callees` — call-graph neighborhood.
-- `snapctx outline <path>` — file symbol tree.
-- `snapctx source <qname> --with-neighbors` — full body of one symbol.
+### First move
 
-snapctx walks up to find the right `.snapctx/index.db` automatically — no need to pass `--root`. From a parent containing several indexed sub-projects (monorepo with `backend/` + `frontend/`), queries fan out across all of them; each result is tagged with a `root` field telling you which sub-project it came from.
+`snapctx context "<query>"` — query can be:
+  - **Natural language**: `"how does session authentication work"`, `"where are rate limits applied"`
+  - **Identifier**: `"SessionManager"`, `"verify_credentials"`
+  - **Exact qname** (fastest path, ~30 ms): `"app.auth:SessionManager.refresh"`
 
-Fall back to `Grep` only for: URL route strings, TODO comments, filename patterns. snapctx indexes symbols, not raw text.
+Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outlines[]`, and a `hint`. Typical response 3–10 k tokens.
 
-If you get a "no snapctx index found" error: run `snapctx index <repo-root>` first.
+### Drill-down (only if `context` wasn't enough)
+
+- `snapctx search "<query>"` — top-K ranked symbols, no bodies.
+- `snapctx expand <qname> --direction callees|callers|both --depth 1|2` — call-graph neighborhood.
+- `snapctx outline <path>` — symbol tree of a single file (cheaper than `Read`).
+- `snapctx source <qname> --with-neighbors` — full body + resolved callee signatures.
+
+### What just works
+
+- **No setup**: queries auto-index on first use; auto-refresh on subsequent runs picks up your edits.
+- **No `--root`**: snapctx walks up from CWD to find the nearest `.snapctx/index.db`.
+- **Monorepos**: launching from a parent of indexed sub-projects fans out queries; each result has a `root` field (`"backend"` / `"frontend"`).
+- **Filters**: `--kind function|method|class|component|constant|interface|type` to narrow results.
+
+### When to fall back to Grep
+
+snapctx indexes **symbols**, not raw text. Use `Grep` for:
+- URL routes / strings (`"/api/v1/users"`)
+- TODO / FIXME comments
+- Configuration values (env var names, feature flags)
+- Filename patterns
+
+For everything else — function bodies, class structure, "where is X used", "how does Y work" — use snapctx.
+
+### Tips
+
+- If `context` returns the wrong area, paraphrase the query — hybrid mode adapts ranker weights to query style.
+- If you need just signatures (no bodies), use `search` instead of `context` to save tokens.
+- `--mode lexical` skips the embedder (~50 ms cold) — use when the query is an exact identifier.
 ```
 
 ---

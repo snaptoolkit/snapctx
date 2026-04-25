@@ -6,6 +6,72 @@ the existing style without re-deriving it from grep.
 
 ---
 
+## Code exploration: dogfood snapctx
+
+This repo IS snapctx. **Use it as your primary code-exploration tool —
+prefer `snapctx context` over `Grep` / `Read` for any question about
+how the codebase works.** Eating our own dog food has two purposes:
+
+1. It's the most efficient way to navigate the codebase (10× fewer
+   tokens, better recall).
+2. Real-world use surfaces parser/ranker bugs we'd never find in
+   tests. Past examples: `_QUERY_COMMANDS` was invisible (Python
+   parser rejected tuples-of-calls) and `Button = forwardRef(...)`
+   was missing (TS parser rejected call-expression RHS). Both
+   surfaced and were fixed by querying snapctx-on-snapctx.
+
+### First move for any code question
+
+```bash
+.venv/bin/snapctx context "<your question>"
+```
+
+Examples that work well on this repo:
+
+```bash
+# Architecture question
+.venv/bin/snapctx context "how does multi-root discovery work"
+
+# Specific function
+.venv/bin/snapctx context "discover_roots walk up to find index"
+
+# Concept / paraphrase
+.venv/bin/snapctx context "weighted reciprocal rank fusion"
+
+# Exact qname (fast path, ~30 ms)
+.venv/bin/snapctx context "src.snapctx.api._search:search_code"
+```
+
+Returns top symbols with full source, callees + callers (depth 2),
+constant-alias resolution, and file outlines — typically enough to
+answer in one call.
+
+### Drill-down (when `context` isn't enough)
+
+```bash
+snapctx search "<query>" -k 10            # ranked symbols, no bodies
+snapctx expand <qname> --direction both   # call-graph neighborhood
+snapctx outline <file.py|.ts>             # file's symbol tree
+snapctx source <qname> --with-neighbors   # full body + callee sigs
+```
+
+### When NOT to use snapctx
+
+Use `Grep` for: URL strings, TODO comments, env var names, raw text
+patterns, and filename globs. snapctx indexes symbols, not text.
+
+### What just works
+
+- **No `--root`**: walks up from CWD to find the nearest `.snapctx/index.db`.
+- **Auto-refresh on every query**: SHA-keyed incremental, picks up your edits.
+- **Auto-index** on first use if no index exists.
+- **Stderr** for progress; **stdout** stays clean JSON for piping to `jq`.
+
+If you ever wonder "would this be easier with snapctx?" — yes, almost
+always. Try it before reaching for Grep.
+
+---
+
 ## What snapctx is
 
 A CLI that gives an AI agent structured context about an unfamiliar
