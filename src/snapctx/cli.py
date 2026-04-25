@@ -15,7 +15,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from snapctx.api import (
     context,
@@ -32,6 +34,60 @@ from snapctx.api import (
 )
 from snapctx.roots import discover_roots, root_label
 from snapctx.watch import run_watch
+
+
+# ---------- query-command registry ----------
+#
+# Each query command — search, expand, outline, source, context — has the
+# same shape: parse args → discover roots → call single or multi version →
+# print JSON. The registry below captures the per-command bits (which
+# functions to call, which argparse fields to forward) so the dispatch
+# loop is one line per command.
+
+
+@dataclass(frozen=True)
+class QueryCommand:
+    """A query command's per-instance config.
+
+    ``arg_names`` are argparse attribute names (after argparse's dash→
+    underscore conversion) to pull off ``args`` and forward as kwargs.
+    Both ``single`` and ``multi`` accept these as kwargs; ``single`` also
+    accepts ``root=Path``, ``multi`` accepts ``roots=list[Path]`` plus
+    ``anchor=Path``.
+    """
+
+    name: str
+    single: Callable[..., dict]
+    multi: Callable[..., dict]
+    arg_names: tuple[str, ...]
+
+    def call(self, args: argparse.Namespace, roots: list[Path], anchor: Path) -> dict:
+        kwargs = {a: getattr(args, a) for a in self.arg_names}
+        if len(roots) > 1:
+            return self.multi(roots=roots, anchor=anchor, **kwargs)
+        return self.single(root=roots[0], **kwargs)
+
+
+_QUERY_COMMANDS: tuple[QueryCommand, ...] = (
+    QueryCommand("search", search_code, search_code_multi,
+                 arg_names=("query", "k", "kind", "mode")),
+    QueryCommand("expand", expand, expand_multi,
+                 arg_names=("qname", "direction", "depth")),
+    QueryCommand("outline", outline, outline_multi,
+                 arg_names=("path",)),
+    QueryCommand("source", get_source, get_source_multi,
+                 arg_names=("qname", "with_neighbors")),
+    QueryCommand("context", context, context_multi,
+                 arg_names=(
+                     "query", "k_seeds", "source_for_top",
+                     "file_outline_limit", "outline_discovery_k",
+                     "mode", "kind",
+                 )),
+)
+_QUERY_BY_NAME: dict[str, QueryCommand] = {c.name: c for c in _QUERY_COMMANDS}
+
+
+# ---------- discovery + auto-indexing ----------
 
 
 def _resolve_roots(start: str) -> tuple[list[Path], Path]:
@@ -88,7 +144,10 @@ def _auto_index(anchor: Path) -> list[Path]:
     return discover_roots(anchor)
 
 
-def main(argv: list[str] | None = None) -> int:
+# ---------- argparse setup ----------
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="snapctx", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -157,15 +216,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_roots.add_argument("root", nargs="?", default=".", help="Start path (default: cwd)")
 
+    return parser
+
+
+# ---------- main ----------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # ---- index / watch: per-root, no fan-out. If launched from a parent
-    # containing multiple indexed sub-projects, refuse and ask the user
-    # to pick one — indexing is a destructive write op and we shouldn't
-    # silently iterate over many sub-projects.
+    # Index / watch: per-root, no fan-out. Indexing creates ``.snapctx``
+    # if missing, so no discovery is needed — operate on the explicit path.
     if args.cmd == "index":
-        # Indexing creates the .snapctx dir if missing, so no discovery
-        # is needed — just operate on the explicit path.
         print(json.dumps(index_root(args.root), indent=2))
         return 0
 
@@ -174,110 +237,42 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "roots":
-        roots, anchor = _resolve_roots(args.root)
-        out = {
-            "anchor": str(anchor),
-            "roots": [
-                {"label": root_label(r, anchor), "path": str(r)}
-                for r in roots
-            ],
-            "mode": "single" if len(roots) == 1 else ("multi" if roots else "none"),
-        }
-        if not roots:
-            out["hint"] = (
-                f"No .snapctx/index.db found at or below {anchor}. "
-                f"Run a query (e.g. `snapctx context ...`) to auto-index, "
-                f"or `snapctx index <path>` explicitly."
-            )
-        print(json.dumps(out, indent=2))
-        return 0 if roots else 1
+        return _print_roots(args.root)
 
-    # ---- query commands: discover roots, fan out if multiple ----
+    # Query commands: discover, auto-index if absent, dispatch.
     roots, anchor = _resolve_roots(args.root)
     if not roots:
-        # No index found anywhere reachable. Build one transparently so
-        # the user's first query "just works".
         roots = _auto_index(anchor)
         if not roots:
             return 2
 
-    multi = len(roots) > 1
+    cmd = _QUERY_BY_NAME.get(args.cmd)
+    if cmd is None:
+        parser.error(f"unknown command: {args.cmd}")
+        return 2
 
-    if args.cmd == "search":
-        if multi:
-            result = search_code_multi(
-                args.query, roots, k=args.k, kind=args.kind,
-                mode=args.mode, anchor=anchor,
-            )
-        else:
-            result = search_code(
-                args.query, k=args.k, kind=args.kind, root=roots[0], mode=args.mode,
-            )
-        print(json.dumps(result, indent=2))
-        return 0
+    print(json.dumps(cmd.call(args, roots, anchor), indent=2))
+    return 0
 
-    if args.cmd == "expand":
-        if multi:
-            result = expand_multi(
-                args.qname, roots, direction=args.direction, depth=args.depth,
-                anchor=anchor,
-            )
-        else:
-            result = expand(
-                args.qname, direction=args.direction, depth=args.depth, root=roots[0],
-            )
-        print(json.dumps(result, indent=2))
-        return 0
 
-    if args.cmd == "outline":
-        if multi:
-            result = outline_multi(args.path, roots, anchor=anchor)
-        else:
-            result = outline(args.path, root=roots[0])
-        print(json.dumps(result, indent=2))
-        return 0
-
-    if args.cmd == "source":
-        if multi:
-            result = get_source_multi(
-                args.qname, roots, with_neighbors=args.with_neighbors,
-                anchor=anchor,
-            )
-        else:
-            result = get_source(
-                args.qname, with_neighbors=args.with_neighbors, root=roots[0],
-            )
-        print(json.dumps(result, indent=2))
-        return 0
-
-    if args.cmd == "context":
-        if multi:
-            result = context_multi(
-                args.query, roots,
-                k_seeds=args.k_seeds,
-                source_for_top=args.source_for_top,
-                file_outline_limit=args.file_outline_limit,
-                outline_discovery_k=args.outline_discovery_k,
-                mode=args.mode,
-                kind=args.kind,
-                anchor=anchor,
-            )
-        else:
-            result = context(
-                args.query,
-                k_seeds=args.k_seeds,
-                source_for_top=args.source_for_top,
-                file_outline_limit=args.file_outline_limit,
-                outline_discovery_k=args.outline_discovery_k,
-                mode=args.mode,
-                kind=args.kind,
-                root=roots[0],
-            )
-        print(json.dumps(result, indent=2))
-        return 0
-
-    parser.error(f"unknown command: {args.cmd}")
-    return 2
+def _print_roots(start: str) -> int:
+    roots, anchor = _resolve_roots(start)
+    out = {
+        "anchor": str(anchor),
+        "roots": [
+            {"label": root_label(r, anchor), "path": str(r)}
+            for r in roots
+        ],
+        "mode": "single" if len(roots) == 1 else ("multi" if roots else "none"),
+    }
+    if not roots:
+        out["hint"] = (
+            f"No .snapctx/index.db found at or below {anchor}. "
+            f"Run a query (e.g. `snapctx context ...`) to auto-index, "
+            f"or `snapctx index <path>` explicitly."
+        )
+    print(json.dumps(out, indent=2))
+    return 0 if roots else 1
 
 
 if __name__ == "__main__":

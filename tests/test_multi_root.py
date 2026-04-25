@@ -131,3 +131,25 @@ def test_outline_multi_routes_by_path_prefix(two_roots: tuple[Path, Path, Path])
     assert out.get("root") == "backend"
     qnames = {s["qname"] for s in out["symbols"]}
     assert "auth:verify_credentials" in qnames
+
+
+def test_search_multi_error_labels_use_anchor(tmp_path: Path) -> None:
+    """When a sub-project's index can't be opened, the per-root error
+    should be labeled with the anchor-relative path, not just the basename."""
+    parent = tmp_path / "monorepo"
+    healthy = parent / "healthy"
+    broken = parent / "broken"
+    healthy.mkdir(parents=True)
+    broken.mkdir(parents=True)
+    (healthy / "m.py").write_text("def alpha(): return 1\n")
+    index_root(healthy)
+    # ``broken`` has no index — search_code raises FileNotFoundError, which
+    # _fan_out catches and surfaces as a per-root error.
+
+    out = search_code_multi(
+        "alpha", [healthy, broken], k=3, anchor=parent, mode="lexical",
+    )
+    assert "root_errors" in out
+    error_labels = [e["root"] for e in out["root_errors"]]
+    # Should use the anchor-relative label "broken", not a full path.
+    assert "broken" in error_labels

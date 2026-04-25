@@ -1,0 +1,179 @@
+"""Query classification, FTS query construction, and rank fusion.
+
+The ranking layer decides *how* to score search hits. It's intentionally
+separate from ``_search`` so swapping in a different ranker (a tuned
+RRF, a learned-to-rank scorer, etc.) doesn't drag the search-orchestration
+code along with it.
+
+Three kinds of work live here:
+
+1. **Query shaping** — turning a free-form user query into the FTS5
+   ``MATCH`` syntax (``_build_fts_query``) and tokenizing for stopword
+   counts (``_tokenize_query``).
+2. **Query classification** — labelling a query as ``identifier`` /
+   ``natural`` / ``mixed`` so the hybrid ranker can pick weights.
+3. **Rank fusion** — Reciprocal Rank Fusion of the lexical and vector
+   rankings, with a test-file penalty so test code never crowds out
+   real domain code in the top-K.
+"""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+
+
+# Words that strongly signal a query is English prose rather than a symbol
+# lookup. Used by ``classify_query`` to pick ranker weights — not stripped
+# from the query itself. We're conservative: only common "wh-" words,
+# auxiliaries, and a handful of prepositions. A snake_case identifier like
+# ``user_is_active`` contains "is" but we care about token-level matches,
+# not substring.
+_NL_STOPWORDS = frozenset({
+    "how", "what", "why", "where", "when", "which", "who", "whose",
+    "does", "do", "did", "is", "are", "was", "were", "be", "been", "being",
+    "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at",
+    "from", "with", "by", "about", "after", "before", "between", "into",
+    "through", "via", "over", "under", "that", "this", "these", "those",
+})
+
+
+_CAMEL_RE = re.compile(r"[a-z][A-Z]")
+
+
+def build_fts_query(user_query: str) -> str:
+    """Map a natural-language-ish query into FTS5 MATCH syntax.
+
+    Splits the input into bare tokens and ORs them, so a multi-word query
+    matches any of the terms. FTS5's own tokenizer handles further normalization.
+    """
+    tokens = [t for t in tokenize_query(user_query) if t]
+    if not tokens:
+        return user_query
+    return " OR ".join(tokens)
+
+
+def tokenize_query(q: str) -> list[str]:
+    return [t for t in re.findall(r"\w+", q.lower()) if t]
+
+
+def looks_like_identifier(token: str) -> bool:
+    """Heuristic: does this token look like a source-code identifier?"""
+    if not token:
+        return False
+    if any(c in token for c in "._:/"):
+        return True          # dotted / qname-ish
+    if "_" in token and token.replace("_", "").isalnum():
+        return True          # snake_case
+    if token.isupper() and len(token) >= 2:
+        return True          # CONSTANT_CASE
+    if _CAMEL_RE.search(token):
+        return True          # camelCase / PascalCase
+    return False
+
+
+def classify_query(query: str) -> str:
+    """Return 'identifier' | 'natural' | 'mixed'.
+
+    - ``identifier``: ≤ 2 tokens AND at least one looks like a source
+      identifier (camelCase, snake_case, dotted, or qname).
+    - ``natural``: 5+ tokens with at least one English stopword, OR 4+ tokens
+      with 2+ stopwords.
+    - ``mixed``: everything else (short freeform like "rate limit", or
+      medium-length hybrid queries).
+    """
+    raw_tokens = query.split()
+    tokens = tokenize_query(query)
+    if not raw_tokens:
+        return "mixed"
+    # Identifier lookup: a dotted qname like ``apps.auth:login`` is a single
+    # raw word even though it contains multiple ``\w+`` matches, so count
+    # whitespace-split words here.
+    if len(raw_tokens) <= 2 and any(looks_like_identifier(t) for t in raw_tokens):
+        return "identifier"
+    n_stop = sum(1 for t in tokens if t in _NL_STOPWORDS)
+    if (len(tokens) >= 5 and n_stop >= 1) or (len(tokens) >= 4 and n_stop >= 2):
+        return "natural"
+    return "mixed"
+
+
+def hybrid_weights(qclass: str) -> tuple[float, float]:
+    """Map a query class to ``(lex_weight, vec_weight)`` for RRF.
+
+    "How does the frontend …" is natural prose — trust the embedding model.
+    ``run_exscript`` is an identifier lookup — BM25 nails it exactly.
+    A short freeform "rate limit" falls in the middle.
+    """
+    if qclass == "natural":
+        return 0.5, 2.5
+    if qclass == "identifier":
+        return 1.5, 0.8
+    return 1.0, 1.5
+
+
+def rrf_merge(
+    lexical_pairs,
+    vector_pairs,
+    *,
+    k_fuse: int = 60,
+    limit: int = 5,
+    lex_weight: float = 1.0,
+    vec_weight: float = 1.5,
+    test_penalty: float = 0.6,
+):
+    """Weighted Reciprocal Rank Fusion of two ranked lists of (row, score) tuples.
+
+    Defaults (tuned empirically on the biblereader benchmark):
+      * ``vec_weight=1.5`` — embeddings beat BM25 on identifier-heavy queries
+        because BM25's camel/snake token splits mix real matches with noise.
+      * ``test_penalty=0.6`` — symbols living under a ``tests/`` path or in a
+        module ending in ``.tests`` or starting with ``test_`` get their RRF
+        score multiplied by this factor. Agents almost never want a test as
+        their top hit, but tests still appear (just demoted).
+    """
+    scores: dict[str, float] = {}
+    kept: dict[str, object] = {}
+    for pairs, weight in ((lexical_pairs, lex_weight), (vector_pairs, vec_weight)):
+        for rank, (row, _) in enumerate(pairs, start=1):
+            q = row["qname"]
+            scores[q] = scores.get(q, 0.0) + weight / (k_fuse + rank)
+            kept[q] = row
+    for q, row in kept.items():
+        if looks_like_test(q, row["file"]):
+            scores[q] *= test_penalty
+    ordered = sorted(scores.items(), key=lambda kv: -kv[1])
+    return [(kept[q], s) for q, s in ordered[:limit]]
+
+
+def looks_like_test(qname: str, file: str) -> bool:
+    return (
+        "/tests/" in file
+        or "/test/" in file
+        or file.endswith("/tests.py")
+        or "tests:" in qname
+        or ":Test" in qname
+        or qname.endswith(".tests")
+    )
+
+
+def suggest_next_action(row: sqlite3.Row) -> str:
+    if row["kind"] in ("class", "module"):
+        return "outline"
+    if row["docstring"] and len(row["docstring"]) > 40:
+        return "expand"
+    return "read_body"
+
+
+def search_hint(results: list[dict]) -> str:
+    if not results:
+        return (
+            "No matches. Try synonyms (e.g. 'throttle' instead of 'rate limit'), "
+            "or a different `kind` filter."
+        )
+    top = results[0]
+    qname = top["qname"]
+    if top["next_action"] == "expand":
+        return f"To see callees of the top result, call expand({qname!r})."
+    if top["next_action"] == "outline":
+        return f"To see {qname}'s members, call outline with its file."
+    return f"If the signature isn't enough, call get_source({qname!r})."
