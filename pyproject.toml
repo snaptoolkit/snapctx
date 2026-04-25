@@ -24,9 +24,9 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [project.urls]
-Homepage = "https://github.com/snapctx/snapctx"
-Repository = "https://github.com/snapctx/snapctx"
-Issues = "https://github.com/snapctx/snapctx/issues"
+Homepage = "https://github.com/snaptoolkit/snapctx"
+Repository = "https://github.com/snaptoolkit/snapctx"
+Issues = "https://github.com/snaptoolkit/snapctx/issues"
 
 [project.scripts]
 snapctx = "snapctx.cli:main"
