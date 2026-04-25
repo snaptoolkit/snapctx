@@ -284,21 +284,80 @@ def test_upper_case_constant_with_call_value_indexed(tmp_path: Path) -> None:
     assert qnames["registry:COMMANDS"].kind == "constant"
 
 
-def test_camelcase_call_no_annotation_still_skipped(tmp_path: Path) -> None:
-    """``const buttonVariants = cva(...)`` — camelCase factory results
-    aren't auto-indexed (no convention strong enough to disambiguate from
-    private compute). Users wanting them indexed should add a type
-    annotation. This test pins the current behavior so we don't quietly
-    flood the index."""
+def test_cva_factory_constant_indexed(tmp_path: Path) -> None:
+    """``const buttonVariants = cva(...)`` — class-variance-authority is
+    shadcn/Radix's idiom for variant-based styling, and these constants ARE
+    the public API of a component file (``import { buttonVariants }``).
+    Index camelCase consts whose RHS is a call to a known variant factory."""
     r = _parse(
         tmp_path,
         "variants.ts",
         "function cva(_: string) { return () => '' }\n"
         "const buttonVariants = cva('inline-flex')\n",
     )
+    qnames = {s.qname: s for s in r.symbols}
+    assert "variants:buttonVariants" in qnames
+    assert qnames["variants:buttonVariants"].kind == "constant"
+
+
+def test_tv_factory_constant_indexed(tmp_path: Path) -> None:
+    """``const cardStyles = tv(...)`` — tailwind-variants is the other
+    common variant factory used in the React ecosystem."""
+    r = _parse(
+        tmp_path,
+        "styles.ts",
+        "function tv(_: object) { return () => '' }\n"
+        "const cardStyles = tv({ base: 'rounded' })\n",
+    )
+    qnames = {s.qname: s for s in r.symbols}
+    assert "styles:cardStyles" in qnames
+    assert qnames["styles:cardStyles"].kind == "constant"
+
+
+def test_unknown_camelcase_factory_still_skipped(tmp_path: Path) -> None:
+    """Without an annotation and without a recognised factory, camelCase
+    consts assigned to call expressions are still skipped — otherwise we'd
+    flood the index with private compute results."""
+    r = _parse(
+        tmp_path,
+        "compute.ts",
+        "function makeThing(): number { return 1 }\n"
+        "const result = makeThing()\n",
+    )
     qnames = {s.qname for s in r.symbols}
-    assert "variants:cva" in qnames           # the function definition
-    assert "variants:buttonVariants" not in qnames
+    assert "compute:result" not in qnames
+
+
+def test_function_declaration_returning_jsx_is_component(tmp_path: Path) -> None:
+    """Modern shadcn convention: ``function Button(props) { return <X/> }``
+    instead of ``const Button = ({...}) => <X/>``. Should be classified as a
+    component, not a plain function — otherwise ``--kind component`` filters
+    out the entire shadcn registry."""
+    r = _parse(
+        tmp_path,
+        "button.tsx",
+        "function Button({ variant }: { variant?: string }) {\n"
+        "  return <button>{variant}</button>\n"
+        "}\n",
+    )
+    qnames = {s.qname: s for s in r.symbols}
+    assert "button:Button" in qnames
+    assert qnames["button:Button"].kind == "component"
+
+
+def test_function_declaration_lowercase_stays_function(tmp_path: Path) -> None:
+    """Lowercase name ⇒ regular function even if it happens to return JSX
+    (rare but happens in helpers / render-prop callbacks)."""
+    r = _parse(
+        tmp_path,
+        "render.tsx",
+        "function renderItem(x: string) {\n"
+        "  return <span>{x}</span>\n"
+        "}\n",
+    )
+    qnames = {s.qname: s for s in r.symbols}
+    assert "render:renderItem" in qnames
+    assert qnames["render:renderItem"].kind == "function"
 
 
 def test_index_tsx_collapses_to_directory(tmp_path: Path) -> None:

@@ -248,6 +248,11 @@ class _Visitor:
         docstring = self._jsdoc_before(node)
 
         sym_kind = "method" if self._stack_top_is_class() else kind
+        # Modern shadcn/Next idiom: ``function Button(props) { return <Comp/> }``
+        # is a component, not a plain function. Promote when the parser was
+        # asked for ``function`` at module scope.
+        if sym_kind == "function" and _looks_like_component(name, node):
+            sym_kind = "component"
         self.symbols.append(
             Symbol(
                 qname=qname,
@@ -466,17 +471,20 @@ class _Visitor:
                 self._stack.pop()
                 continue
 
-            # Module-scope const/let — three name conventions, three rules:
+            # Module-scope const/let — four name conventions, four rules:
             #
             #   PascalCase + call_expression  → component (forwardRef, memo, lazy, ...)
             #   UPPER_CASE                    → constant, any RHS (registries,
             #                                   dispatch tables — trust the convention)
             #   annotated + literal-like RHS  → constant (current behavior, looser
             #                                   convention so we keep the literal gate)
+            #   camelCase + variant factory   → constant (shadcn ``buttonVariants
+            #                                   = cva(...)`` — these constants ARE
+            #                                   the public styling API of a file)
             #
-            # camelCase factory results (`const buttonVariants = cva(...)`) are
-            # left out deliberately — too easy to flood the index with private
-            # compute results. Users wanting them indexed can add an annotation.
+            # Other camelCase factory results stay deliberately unindexed:
+            # private compute would flood the index without a strong signal
+            # that the binding is part of the module's public surface.
             if not _is_module_scope(node):
                 continue
 
@@ -486,8 +494,14 @@ class _Visitor:
                 _has_type_annotation(name_node.parent) and _is_constant_like(value_node)
             )
             is_pascal_wrapped = is_pascal and value_node.type == "call_expression"
+            is_variant_factory = (
+                not is_pascal
+                and not is_upper
+                and value_node.type == "call_expression"
+                and _call_function_name(value_node) in _VARIANT_FACTORIES
+            )
 
-            if not (is_upper or is_annotated_literal or is_pascal_wrapped):
+            if not (is_upper or is_annotated_literal or is_pascal_wrapped or is_variant_factory):
                 continue
 
             kind = "component" if is_pascal_wrapped else "constant"
@@ -743,6 +757,23 @@ def _is_constant_like(value_node) -> bool:
     if t in ("identifier", "member_expression"):
         return True
     return False
+
+
+# Variant-factory functions whose camelCase results form the public styling
+# API of a component file. ``cva`` is class-variance-authority (shadcn,
+# Radix); ``tv`` is tailwind-variants. Adding more is cheap but every
+# entry widens the index — only add if it's a well-known styling factory
+# whose return value users routinely import.
+_VARIANT_FACTORIES = frozenset({"cva", "tv"})
+
+
+def _call_function_name(call_node) -> str | None:
+    """Return the simple identifier of a ``call_expression``'s function, or
+    ``None`` for member expressions (``foo.bar()``) and other non-bare calls."""
+    fn = call_node.child_by_field_name("function")
+    if fn is None or fn.type != "identifier":
+        return None
+    return fn.text.decode("utf-8") if hasattr(fn, "text") else None
 
 
 def _has_type_annotation(parent) -> bool:
