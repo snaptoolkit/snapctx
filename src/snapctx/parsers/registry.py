@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from snapctx.parsers.base import Parser
 from snapctx.parsers.python import PythonParser
+from snapctx.parsers.shell import ShellParser
 from snapctx.parsers.typescript import TypeScriptParser
 
-_PARSERS: list[Parser] = [PythonParser(), TypeScriptParser()]
+_PARSERS: list[Parser] = [PythonParser(), TypeScriptParser(), ShellParser()]
 
 _BY_EXT: dict[str, Parser] = {
     ext: p for p in _PARSERS for ext in p.extensions

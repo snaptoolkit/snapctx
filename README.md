@@ -6,7 +6,7 @@
 
 **Structured codebase context for AI agents.** One tool call replaces the agent's usual loop of `grep` + `read` + chase imports. Point it at a codebase; ask a natural-language question; get back a self-contained context pack — top symbols, their signatures, their docstrings, a **depth-2 call-path trace**, module-level architectural docstrings, and the full source of the top matches — in single-digit ms per query once warm.
 
-Python, TypeScript, TSX, and JSX today. Parser layer is pluggable — more languages are straight additions.
+Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`) today. Parser layer is pluggable — more languages are straight additions.
 
 ---
 
@@ -123,8 +123,8 @@ respect_gitignore    = true      # honor .gitignore
 max_file_size        = 256000    # bytes; default 250 KiB
 
 # Restrict to specific parsers (default: every parser is active).
-# Valid values: "python", "typescript".
-languages = ["python", "typescript"]
+# Valid values: "python", "typescript", "shell".
+languages = ["python", "typescript", "shell"]
 ```
 
 Unknown keys are tolerated for forward-compatibility; type errors on known keys raise with the file path so they're easy to fix.
@@ -501,6 +501,7 @@ pack = context_multi("login session", roots, anchor=Path("."))
 **Indexed:**
 - **Python:** functions and methods (`def`, `async def`, including nested / closure definitions); classes (with base-class list for MRO-aware `self.X` resolution); module-level constants (`UPPER_CASE = literal | identifier | collection`); class-level constants (`class C: STATUS_CHOICES = [...]`); imports (for call-site resolution).
 - **TypeScript / TSX / JSX:** functions and arrow-const functions; classes (with `extends` / `implements` base chain); interfaces and type aliases; enums; React components (capitalized name + JSX in body); module-scope typed constants. JSX usage is tracked as a call edge (`<Button />` → `Button:Button`).
+- **Shell (`.sh`, `.bash`):** module symbol per script (with leading-comment block as docstring); function definitions in both POSIX (`name() { … }`) and ksh (`function name { … }`) form; `source` / `.` directives as imports; intra-script function calls as call edges. Call detection skips external binaries (`aws`, `docker`, `git`) — they're not symbols in any indexable sense.
 - **Module docstrings** — Python files with a top string docstring and TS/JSX files opening with a `/** … */` block. This captures the architectural "why" of a file, which often isn't repeated on any single class or function.
 - **Call edges**, with optimistic `self.X` resolution through base classes, plus a post-ingest *promote* pass that fixes up forward references (methods defined later in the class body than their caller).
 
@@ -532,6 +533,7 @@ snapctx/
       base.py           # Parser protocol (language-agnostic)
       python.py         # stdlib ast implementation
       typescript.py     # tree-sitter TS + TSX grammars (JSX-aware)
+      shell.py          # regex-based bash/sh parser (functions, source, calls)
       registry.py       # extension → parser dispatch
     walker.py           # gitignore-aware file walker + bundle/size filters
     index.py            # SQLite schema, FTS5, vector BLOB, promote/demote passes
@@ -565,7 +567,7 @@ uv pip install --group dev      # or: uv pip install pytest
 pytest
 ```
 
-170+ tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
+180+ tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
 
 ---
 
