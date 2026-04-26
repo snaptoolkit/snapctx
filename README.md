@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings — in single-digit ms per query once warm.
+**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. Median ~8× fewer tokens than grep+read on real questions, **always 1 tool call instead of 6–9** ([measured](#why-bother-the-numbers)).
 
 Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The parser layer is pluggable — adding a language is a single new file.
 
@@ -73,7 +73,7 @@ snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Curso
 ```markdown
 ## Code exploration with snapctx
 
-For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It's faster, more accurate, and uses ~10× fewer tokens than `Grep` + `Read` chains.
+For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It's faster (1 tool call vs 6–9), more accurate, and on cross-cutting questions returns up to ~15× fewer tokens than `Grep` + `Read` chains.
 
 **Why it works**: snapctx parses the codebase into a symbol graph (functions, classes, components, constants, calls, imports), runs hybrid lexical+semantic search, and returns top symbols with source bodies, a depth-2 call-path trace (callees-of-callees + callers-of-callers), constant-alias resolution, and file outlines — usually enough to answer in one call.
 
@@ -115,15 +115,31 @@ snapctx indexes **symbols**, not raw text. Use `Grep` for: URL routes (`"/api/v1
 
 An agent investigating an unfamiliar codebase burns tokens the same way every time:
 
-1. `Grep` — 50–500 hits, most irrelevant.
-2. `Read` three candidate files — 10–30 k tokens, 95 % noise.
+1. `Grep` for some terms — sometimes 50, sometimes 500 hits.
+2. `Read` two or three candidate files in full.
 3. `Grep` again for a name the agent just saw.
-4. `Read` two more files to chase imports.
+4. `Read` more files to chase imports.
 5. Synthesize, sometimes with gaps.
 
-On a real 1,500-symbol codebase a question like *"how does the parallel reader fetch verses for multiple versions?"* takes **15–25 tool calls**, **30–80 k tokens**, and **60–120 seconds** of agent time.
+We measured both paths on three real codebases (a Django backend, zustand, and snapctx itself) — **7 questions total**, asking the same thing of `snapctx context "<query>"` and of a simulated grep-and-read agent loop (greps for the question's key terms + read the top-3 most-frequently-matching files in full):
 
-`snapctx` answers the same question with **1 call**, **2–5 k tokens**, **~400 ms** cold (or 5–10 ms warm). It does the search → graph-walk → source-read → constant-alias resolution once on a pre-built index and returns a single structured payload. The win is in collapsing 15+ reasoning-and-call round trips into 1.
+| Codebase | Question | snapctx tokens | grep+read tokens | tool calls (snapctx → grep+read) |
+|---|---|---:|---:|---:|
+| Django backend | session authentication | 12 k | 10 k | 1 → 6 |
+| Django backend | bible verses, multiple translations | 17 k | **140 k** | 1 → 8 |
+| Django backend | rate limits on API endpoints | 5 k | 40 k | 1 → 8 |
+| zustand | subscribe / selector equality | 4 k | 43 k | 1 → 7 |
+| zustand | store creation and persistence | 4 k | **57 k** | 1 → 6 |
+| snapctx | multi-root fan-out merge | 8 k | 32 k | 1 → 9 |
+| snapctx | python self-method resolution | 11 k | 44 k | 1 → 9 |
+
+**Two consistent wins, one honest caveat.**
+
+1. **1 tool call vs 6–9.** Always. Every question collapses the reasoning loop into a single round-trip. That's the bigger leverage, since each agent call costs ~3–8 s of LLM thinking time on top of the tool execution itself — so in practice we're trading 30–60 s of agent wall-clock for ~5 s.
+2. **Tokens drop ~8× on the median question, up to ~16× on cross-cutting "where is X applied" survey-style questions** that would force the agent to read multiple large files (the 140 k case above). For narrow keyword-friendly questions where grep happens to land cleanly, snapctx returns *similar* tokens but with structure (bodies + callees + callers + outlines) instead of raw line matches — so the agent answers in 1 call rather than 4–6.
+3. **Caveat:** ratios are real but vary 4–16× by question. We don't claim a single multiplier.
+
+snapctx's per-call latency: ~0.3–1.1 s cold from CLI (depends on repo size), ~5–10 ms warm in-process. The wins above are at the *agent* level — collapsing the round-trip count, not making any single call faster.
 
 ---
 
