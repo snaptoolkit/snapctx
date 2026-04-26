@@ -26,6 +26,7 @@ def test_no_config_returns_defaults(tmp_path: Path) -> None:
     cfg = load_config(tmp_path)
     assert cfg == Config.default()
     assert cfg.walker.skip_vendor_bundles is True
+    assert cfg.walker.skip_vendor_packages is True
     assert cfg.walker.respect_gitignore is True
     assert cfg.walker.languages is None
 
@@ -68,6 +69,34 @@ def test_default_skip_vendor_bundles_drops_minified(tmp_path: Path) -> None:
 
     files = {p.name for p in iter_source_files(tmp_path)}
     assert files == {"real.js"}
+
+
+def test_default_skips_vendor_package_dirs(tmp_path: Path) -> None:
+    """Default behavior: ``node_modules`` / ``.venv`` / ``vendor`` stay out of the index."""
+    (tmp_path / "app.py").write_text("def x(): pass\n")
+    (tmp_path / "node_modules" / "lib").mkdir(parents=True)
+    (tmp_path / "node_modules" / "lib" / "dep.js").write_text("export const x = 1;\n")
+    (tmp_path / ".venv" / "lib").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib" / "site.py").write_text("def y(): pass\n")
+    (tmp_path / "vendor" / "fork").mkdir(parents=True)
+    (tmp_path / "vendor" / "fork" / "patched.py").write_text("def z(): pass\n")
+
+    files = {p.name for p in iter_source_files(tmp_path)}
+    assert files == {"app.py"}
+
+
+def test_skip_vendor_packages_off_indexes_node_modules(tmp_path: Path) -> None:
+    """Toggle off: deps under ``node_modules`` / ``vendor`` become indexable and queryable."""
+    (tmp_path / "app.py").write_text("def x(): pass\n")
+    (tmp_path / "node_modules" / "lib").mkdir(parents=True)
+    (tmp_path / "node_modules" / "lib" / "dep.js").write_text("export const x = 1;\n")
+    (tmp_path / "vendor" / "fork").mkdir(parents=True)
+    (tmp_path / "vendor" / "fork" / "patched.py").write_text("def z(): pass\n")
+
+    _write_config(tmp_path, '[walker]\nskip_vendor_packages = false\n')
+    cfg = load_config(tmp_path)
+    files = {p.name for p in iter_source_files(tmp_path, cfg.walker)}
+    assert files == {"app.py", "dep.js", "patched.py"}
 
 
 def test_max_file_size_override(tmp_path: Path) -> None:
@@ -126,10 +155,9 @@ def test_extra_include_overrides_gitignore(tmp_path: Path) -> None:
     (tmp_path / "vendor" / "junk").mkdir()
     (tmp_path / "vendor" / "junk" / "raw.py").write_text("def y(): pass\n")
 
-    # Without the override, vendor/ is hidden by .gitignore AND by the
-    # ALWAYS_SKIP "vendor" entry. We can override the gitignore but not
-    # ALWAYS_SKIP without renaming the dir — verify the include works
-    # against a plain .gitignore-only case.
+    # vendor/ is hidden by both .gitignore and VENDOR_PACKAGE_DIRS, and
+    # extra_include only overrides the gitignore layer — fall back to a
+    # plain gitignore-only case so the test isolates the include behavior.
     (tmp_path / "private").mkdir()
     (tmp_path / "private" / "internal.py").write_text("def z(): pass\n")
     (tmp_path / ".gitignore").write_text("private/\n")
