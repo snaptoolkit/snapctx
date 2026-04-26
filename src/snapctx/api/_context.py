@@ -88,7 +88,9 @@ def context(
             "token_estimate": 0,
         }
 
+    from snapctx.api._cross_package import CrossPackageResolver
     idx = open_index(root_path, scope=scope)
+    resolver = CrossPackageResolver(root_path, current_scope=scope)
     try:
         enriched = [
             _enrich_seed(
@@ -97,11 +99,13 @@ def context(
                 expand_depth=expand_depth,
                 source_for_top=source_for_top,
                 body_char_cap=body_char_cap,
+                resolver=resolver,
             )
             for i, seed in enumerate(seeds)
         ]
         file_outlines = _file_outlines(idx, candidates, file_outline_limit)
     finally:
+        resolver.close()
         idx.close()
 
     payload: dict = {
@@ -172,6 +176,7 @@ def _enrich_seed(
     expand_depth: int,
     source_for_top: int,
     body_char_cap: int,
+    resolver=None,
 ) -> dict:
     """Attach callees/callers, source, and (for constants) alias resolution."""
     qname = seed["qname"]
@@ -189,8 +194,14 @@ def _enrich_seed(
         entry["decorators"] = seed["decorators"]
 
     depth = max(1, expand_depth)
-    callees = collect_neighbors(idx, qname, direction="callees", limit=neighbor_limit, depth=depth)
-    callers = collect_neighbors(idx, qname, direction="callers", limit=neighbor_limit, depth=depth)
+    callees = collect_neighbors(
+        idx, qname, direction="callees",
+        limit=neighbor_limit, depth=depth, resolver=resolver,
+    )
+    callers = collect_neighbors(
+        idx, qname, direction="callers",
+        limit=neighbor_limit, depth=depth, resolver=resolver,
+    )
     if callees:
         entry["callees"] = callees
     if callers:

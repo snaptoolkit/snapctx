@@ -24,6 +24,7 @@ from snapctx.api._common import (
     open_index,
     row_to_symbol_dict,
 )
+from snapctx.api._cross_package import CrossPackageResolver
 from snapctx.index import Index
 
 
@@ -110,6 +111,7 @@ def expand(
     """
     root_path = Path(root).resolve()
     idx = open_index(root_path, scope=scope)
+    resolver = CrossPackageResolver(root_path, current_scope=scope)
     try:
         root_sym = idx.get_symbol(qname)
         if root_sym is None:
@@ -127,17 +129,23 @@ def expand(
             next_frontier: list[str] = []
             layer: list[dict] = []
             for source_qname in frontier:
-                for neigh_qname, neigh_row, edge_kind, call_line in _neighbors(
-                    idx, source_qname, direction
+                for neigh_qname, neigh_row, edge_kind, call_line, pkg in _neighbors(
+                    idx, source_qname, direction, resolver,
                 ):
                     if neigh_qname in visited:
                         continue
                     visited.add(neigh_qname)
-                    next_frontier.append(neigh_qname)
+                    # Cross-package neighbors live in another index, so
+                    # we can't traverse their callees/callers from the
+                    # current frontier — keep them as terminal entries.
+                    if pkg is None:
+                        next_frontier.append(neigh_qname)
                     entry = {"from": source_qname, "edge": edge_kind, "line": call_line}
                     if neigh_row is not None:
                         entry.update(row_to_symbol_dict(neigh_row))
                         entry["docstring"] = docstring_summary(neigh_row["docstring"])
+                        if pkg is not None:
+                            entry["package"] = pkg
                     else:
                         entry["qname"] = neigh_qname
                         entry["resolved"] = False
@@ -156,24 +164,43 @@ def expand(
             "hint": _expand_hint(layers),
         }
     finally:
+        resolver.close()
         idx.close()
 
 
 def _neighbors(
-    idx: Index, qname: str, direction: str
-) -> list[tuple[str, sqlite3.Row | None, str, int]]:
-    """Return (neighbor_qname, neighbor_symbol_row_or_None, edge_kind, line) tuples."""
-    out: list[tuple[str, sqlite3.Row | None, str, int]] = []
+    idx: Index, qname: str, direction: str, resolver: CrossPackageResolver,
+) -> list[tuple[str, sqlite3.Row | None, str, int, str | None]]:
+    """Return (neighbor_qname, neighbor_symbol_row_or_None, edge_kind, line, package_or_None) tuples.
+
+    ``package`` is non-None when the neighbor was resolved by following an
+    import into a sibling vendor package's index; in that case the row
+    comes from that other index.
+    """
+    out: list[tuple[str, sqlite3.Row | None, str, int, str | None]] = []
     if direction in ("callees", "both"):
         for row in idx.callees_of(qname):
-            neigh_qname = row["callee_qname"] or f"?:{row['callee_name']}"
-            sym = idx.get_symbol(neigh_qname) if row["callee_qname"] else None
-            out.append((neigh_qname, sym, "callee", row["line"]))
+            if row["callee_qname"]:
+                sym = idx.get_symbol(row["callee_qname"])
+                out.append((row["callee_qname"], sym, "callee", row["line"], None))
+                continue
+            cross = resolver.resolve(
+                row["callee_name"], row["file"], idx,
+            )
+            if cross is not None:
+                pkg = cross["package"]
+                xrow = cross["row"]
+                tagged_qname = f"{pkg}::{xrow['qname']}"
+                out.append((tagged_qname, xrow, "callee", row["line"], pkg))
+                continue
+            out.append(
+                (f"?:{row['callee_name']}", None, "callee", row["line"], None)
+            )
     if direction in ("callers", "both"):
         for row in idx.callers_of(qname):
             neigh_qname = row["caller_qname"]
             sym = idx.get_symbol(neigh_qname)
-            out.append((neigh_qname, sym, "caller", row["line"]))
+            out.append((neigh_qname, sym, "caller", row["line"], None))
     return out
 
 
@@ -210,6 +237,7 @@ def collect_neighbors(
     direction: Literal["callees", "callers"],
     limit: int,
     depth: int,
+    resolver: CrossPackageResolver | None = None,
 ) -> list[dict]:
     """Gather direction-specific neighbors of ``qname`` up to ``depth`` hops.
 
@@ -217,6 +245,12 @@ def collect_neighbors(
     or ``callers`` (when direction='callers') with the next hop's neighbors.
     Unresolved entries never recurse — we don't know what they call. Depth-2
     neighbors use a tighter limit (half, minimum 3) to keep payloads bounded.
+
+    ``resolver`` enables cross-package fallback: when a callee is unresolved
+    in this index, attempt to resolve it via the file's imports against
+    sibling vendor indexes that have already been built. Cross-package
+    hits are tagged with a ``package`` field and don't recurse (their own
+    callees live in the other index).
     """
     rows = idx.callees_of(qname) if direction == "callees" else idx.callers_of(qname)
     out: list[dict] = []
@@ -235,9 +269,17 @@ def collect_neighbors(
                         nested = collect_neighbors(
                             idx, neigh_qname, direction=direction,
                             limit=max(3, limit // 2), depth=depth - 1,
+                            resolver=resolver,
                         )
                         if nested:
                             entry["callees"] = nested
+                    out.append(entry)
+                    continue
+            if resolver is not None:
+                cross = resolver.resolve(row["callee_name"], row["file"], idx)
+                if cross is not None:
+                    entry = neighbor_entry(cross["row"], row["line"])
+                    entry["package"] = cross["package"]
                     out.append(entry)
                     continue
             out.append({"qname": neigh_qname, "line": row["line"], "resolved": False})
@@ -250,6 +292,7 @@ def collect_neighbors(
                 nested = collect_neighbors(
                     idx, row["caller_qname"], direction=direction,
                     limit=max(3, limit // 2), depth=depth - 1,
+                    resolver=resolver,
                 )
                 if nested:
                     entry["callers"] = nested

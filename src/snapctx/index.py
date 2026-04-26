@@ -280,6 +280,19 @@ class Index:
             (callee_qname,),
         ).fetchall()
 
+    def imports_for_file(self, file: str) -> list[sqlite3.Row]:
+        """Return all imports declared in a file, ordered by line.
+
+        Used by cross-package call resolution: when a call's callee is
+        unresolved, we look at what the file imports to figure out which
+        sibling vendor index might know the target.
+        """
+        return self.conn.execute(
+            "SELECT module, name, alias, line FROM imports "
+            "WHERE file = ? ORDER BY line ASC",
+            (file,),
+        ).fetchall()
+
     # ---------- vector store ----------
 
     def symbols_without_vectors(self) -> list[sqlite3.Row]:

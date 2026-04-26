@@ -179,6 +179,8 @@ snapctx vendor forget django
 
 **Subsequent scoped calls are fast.** A repo query auto-refreshes the repo's index (SHA-skip ~750 ms on a 300-file project). A scoped query *skips* the repo refresh entirely — the repo's index isn't being queried — and the vendor index is built-once-and-forget. End-to-end latency: ~350 ms warm, dominated by fastembed model load. Inside `snapctx watch` (or any long-running process where the model stays loaded) this drops further to single-digit ms.
 
+**Cross-package call graph (lazy stitching).** When `expand` or `context` traverses a call inside one indexed package and the callee was imported from *another also-indexed* package, the resolver follows the file's `imports` table to the right sibling index and returns the resolved symbol with a `package` tag. Example: inside django, `tasks.base:Task.call` invokes `async_to_sync`; if you've also indexed `asgiref:`, `expand` returns `{"qname": "sync:async_to_sync", "package": "asgiref", ...}` instead of an unresolved name. Honors the explicit-prefix rule: cross-resolution *only* peeks into packages you've already chosen to index — it never spontaneously fans out into something you didn't ask for. Indexes for the unresolved cross-package call get reported as `unresolved` with the bare callee name, and the user can index that package to see the edge resolve next time.
+
 ---
 
 ## Use it from an AI agent
@@ -563,7 +565,7 @@ uv pip install --group dev      # or: uv pip install pytest
 pytest
 ```
 
-160+ tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
+170+ tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
 
 ---
 
@@ -588,6 +590,7 @@ pytest
 - [x] **Multi-root fan-out** — queries from a parent dir hit every indexed sub-project in parallel and tag results with their `root` label
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 - [x] **On-demand vendor packages with per-package isolation** — prefix a query with `<pkg>:` (or pass `--pkg <name>`) and snapctx ingests just that package into its own dedicated index at `.snapctx/vendor/<name>/index.db`, then answers from there. Vector neighborhoods stay focused (no cross-namespace pollution) and qnames re-root at the package (`db.models.query:QuerySet`, not the long venv path). No prefix → repo only. Managed via `snapctx vendor list` / `vendor forget`
+- [x] **Cross-package call-graph stitching** — when a call inside one indexed package targets a name imported from another *also-indexed* package, `expand` and `context` follow the import to the sibling index and return the resolved symbol tagged with its package. Lazy (only kicks in when the user has indexed both ends), cached per query operation
 
 **Planned next (snapctx core):**
 - [ ] **`snapctx serve` daemon** — long-running process holds the fastembed model + SQLite handle warm; CLI invocations talk to it over a Unix socket. Closes the ~400 ms cold-CLI gap so every query is 5–10 ms whether or not you have `snapctx watch` running. Lifecycle: auto-start on first query, idle-stop after N minutes, single-instance lock per repo.
