@@ -88,9 +88,19 @@ def sha_bytes(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-def db_path_for(root: Path) -> Path:
-    """Resolve the standard SQLite path for a repo root."""
-    return (root / ".snapctx" / "index.db").resolve()
+def db_path_for(root: Path, scope: str | None = None) -> Path:
+    """Resolve the SQLite index path for a root.
+
+    ``scope=None`` (default) returns the repo's own index. A non-None
+    scope (a package directory name like ``"django"``) returns that
+    package's isolated index. Per-package isolation keeps vector
+    neighborhoods focused — a search for ``QuerySet`` inside the
+    django scope can't be polluted by the user's own filter classes,
+    and vice versa.
+    """
+    if scope is None:
+        return (root / ".snapctx" / "index.db").resolve()
+    return (root / ".snapctx" / "vendor" / scope / "index.db").resolve()
 
 
 class Index:
@@ -101,6 +111,12 @@ class Index:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        # Manual transaction control. Python's default ``isolation_level=""``
+        # auto-begins a transaction on the first DML, which then collides
+        # with the explicit ``BEGIN`` issued by ``tx()`` ("cannot start a
+        # transaction within a transaction"). With ``None`` the only txn
+        # boundaries are the explicit BEGIN/COMMIT in ``tx()``.
+        self.conn.isolation_level = None
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
@@ -116,19 +132,31 @@ class Index:
 
     def forget_file(self, file: str) -> None:
         """Remove all rows for a file (symbols, calls, imports, FTS, vectors, files)."""
-        cur = self.conn.cursor()
-        cur.execute(
-            "DELETE FROM symbols_fts WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
-            (file,),
-        )
-        cur.execute(
-            "DELETE FROM symbol_vectors WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
-            (file,),
-        )
-        cur.execute("DELETE FROM symbols WHERE file = ?", (file,))
-        cur.execute("DELETE FROM calls   WHERE file = ?", (file,))
-        cur.execute("DELETE FROM imports WHERE file = ?", (file,))
-        cur.execute("DELETE FROM files   WHERE path = ?", (file,))
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                "DELETE FROM symbols_fts WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
+                (file,),
+            )
+            cur.execute(
+                "DELETE FROM symbol_vectors WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
+                (file,),
+            )
+            cur.execute("DELETE FROM symbols WHERE file = ?", (file,))
+            cur.execute("DELETE FROM calls   WHERE file = ?", (file,))
+            cur.execute("DELETE FROM imports WHERE file = ?", (file,))
+            cur.execute("DELETE FROM files   WHERE path = ?", (file,))
+
+    def wipe_all(self) -> None:
+        """Drop every data row, keeping the schema. Used when the project
+        root has been renamed/moved and the stored absolute paths no longer
+        resolve — full rebuild is cheaper than path-rewriting."""
+        with self.tx():
+            for tbl in (
+                "symbols_fts", "symbol_vectors",
+                "symbols", "calls", "imports", "files",
+            ):
+                self.conn.execute(f"DELETE FROM {tbl}")
 
     # ---------- ingest ----------
 
@@ -252,6 +280,19 @@ class Index:
             (callee_qname,),
         ).fetchall()
 
+    def imports_for_file(self, file: str) -> list[sqlite3.Row]:
+        """Return all imports declared in a file, ordered by line.
+
+        Used by cross-package call resolution: when a call's callee is
+        unresolved, we look at what the file imports to figure out which
+        sibling vendor index might know the target.
+        """
+        return self.conn.execute(
+            "SELECT module, name, alias, line FROM imports "
+            "WHERE file = ? ORDER BY line ASC",
+            (file,),
+        ).fetchall()
+
     # ---------- vector store ----------
 
     def symbols_without_vectors(self) -> list[sqlite3.Row]:
@@ -266,10 +307,10 @@ class Index:
         rows = [
             (q, np.asarray(v, dtype=np.float32).tobytes()) for q, v in zip(qnames, vectors)
         ]
-        self.conn.executemany(
-            "INSERT OR REPLACE INTO symbol_vectors(qname, vector) VALUES (?, ?)", rows
-        )
-        self.conn.commit()
+        with self.tx():
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO symbol_vectors(qname, vector) VALUES (?, ?)", rows
+            )
 
     def vector_search(
         self, query_vec, limit: int, kind: str | None = None
@@ -378,18 +419,27 @@ class Index:
         (e.g. Mixin.method via MRO; Django-ORM chains like Model:objects.filter),
         and this sweep removes the ones that didn't pan out.
         """
-        cur = self.conn.execute(
-            "UPDATE calls SET callee_qname = NULL "
-            "WHERE callee_qname IS NOT NULL "
-            "  AND callee_qname NOT IN (SELECT qname FROM symbols)"
-        )
-        self.conn.commit()
-        return cur.rowcount
+        with self.tx():
+            cur = self.conn.execute(
+                "UPDATE calls SET callee_qname = NULL "
+                "WHERE callee_qname IS NOT NULL "
+                "  AND callee_qname NOT IN (SELECT qname FROM symbols)"
+            )
+            return cur.rowcount
 
     # ---------- transaction helper ----------
 
     @contextmanager
     def tx(self) -> Iterator[None]:
+        """Open a transaction, or join the caller's if one is already open.
+
+        Reentrancy lets composite ops (e.g. ``ingest`` calls ``forget_file``)
+        each wrap themselves in ``tx()`` for safety when called standalone,
+        without nesting ``BEGIN``/``COMMIT`` when called from another tx.
+        """
+        if self.conn.in_transaction:
+            yield
+            return
         try:
             self.conn.execute("BEGIN")
             yield

@@ -6,7 +6,8 @@ Design:
 - Events are debounced: rapid bursts (e.g. a git checkout that touches 200
   files) coalesce into a single re-index after the dust settles.
 - Only events inside the supported extension set and outside the
-  ``ALWAYS_SKIP`` directory list trigger a re-index.
+  walker's skip-dir set (``ALWAYS_SKIP`` plus vendor-package dirs when
+  ``skip_vendor_packages`` is on) trigger a re-index.
 - ``index_root`` is already incremental, so a trigger re-parses only the
   files whose SHA changed — typically <500 ms.
 
@@ -28,7 +29,7 @@ from watchdog.observers import Observer
 from snapctx.api import index_root
 from snapctx.config import load_config
 from snapctx.parsers.registry import extensions_for_languages, supported_extensions
-from snapctx.walker import ALWAYS_SKIP
+from snapctx.walker import skip_dirs_for
 
 
 class _IndexHandler(FileSystemEventHandler):
@@ -54,7 +55,7 @@ class _IndexHandler(FileSystemEventHandler):
             if cfg.walker.languages is not None
             else supported_extensions()
         )
-        self._skip_dirs = ALWAYS_SKIP | set(cfg.walker.extra_skip_dirs)
+        self._skip_dirs = skip_dirs_for(cfg.walker)
 
     def on_any_event(self, event: FileSystemEvent) -> None:
         if event.is_directory:

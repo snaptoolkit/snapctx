@@ -41,8 +41,18 @@ def index_root(root: str | Path) -> dict:
     cfg = load_config(root_path)
     idx = Index(db_path_for(root_path))
     counts = {"scanned": 0, "updated": 0, "skipped": 0, "symbols": 0, "removed": 0}
+    moved = False
 
     try:
+        # If the project was renamed/moved on disk, every stored absolute
+        # path is now stale. Detect via a sample row's prefix and wipe so
+        # the rebuild below repopulates with current paths. Cheaper than
+        # rewriting every row in-place, and avoids the path-mismatch trap
+        # where the staleness diff would forget every old row anyway —
+        # except the auto-refresh transaction would then hit the explicit-
+        # BEGIN-vs-implicit-BEGIN race that this commit also fixes.
+        moved = _wipe_if_root_moved(idx, root_path)
+
         # Snapshot the current filesystem view and diff it against the DB so
         # rows for files that have been deleted / renamed / .gitignored go
         # away. Without this, stale symbols and call edges accumulate.
@@ -85,6 +95,99 @@ def index_root(root: str | Path) -> dict:
         "symbols_indexed": counts["symbols"],
         "calls_demoted": demoted,
         "symbols_embedded": embedded,
+        "root_moved": moved,
+    }
+
+
+def _wipe_if_root_moved(idx: Index, root_path: Path) -> bool:
+    """Drop all rows when stored paths don't sit under the current root.
+
+    Heuristic: look at one ``files.path`` row. If it isn't a child of
+    ``root_path``, the project was renamed/moved (or the index was copied
+    into a sibling repo). Wiping is cheaper than rewriting every absolute
+    path in symbols/calls/imports/files.
+    """
+    sample = idx.conn.execute("SELECT path FROM files LIMIT 1").fetchone()
+    if sample is None:
+        return False
+    sample_path = Path(sample["path"])
+    try:
+        sample_path.relative_to(root_path)
+    except ValueError:
+        idx.wipe_all()
+        return True
+    return False
+
+
+def index_vendor_package(
+    repo_root: str | Path, name: str, pkg_path: str | Path
+) -> dict:
+    """Ingest one third-party package into its own dedicated index.
+
+    Storage: ``<repo_root>/.snapctx/vendor/<name>/index.db``. Completely
+    isolated from the repo's index — separate symbols, separate FTS, and
+    most importantly separate vector matrix so cosine search inside the
+    package isn't polluted by cross-namespace neighbors.
+
+    The parser is rooted at ``pkg_path`` (not ``repo_root``), so qnames
+    inside this index look like ``db.models.query:QuerySet`` — the
+    package's own module structure — instead of carrying a long
+    ``.venv.lib.python*.site-packages.django.…`` prefix.
+    """
+    from snapctx.config import WalkerConfig
+    from snapctx.index import sha_bytes
+    from snapctx.parsers.registry import parser_for
+    from snapctx.walker import iter_source_files
+
+    repo_root = Path(repo_root).resolve()
+    pkg_path = Path(pkg_path).resolve()
+    idx = Index(db_path_for(repo_root, scope=name))
+    counts = {"updated": 0, "skipped": 0, "symbols": 0}
+
+    # Inside a venv / node_modules: gitignore would block us, vendor-skip
+    # would block us — disable both. Bundle filter stays on so a
+    # ``react/dist/react.min.js`` doesn't pollute the index.
+    cfg = WalkerConfig(
+        skip_vendor_packages=False,
+        respect_gitignore=False,
+    )
+
+    try:
+        # Same rename-detection trick as the repo index — if the package
+        # was reinstalled (uv / pip --upgrade), the absolute paths in our
+        # DB no longer resolve. Wipe and rebuild instead of dragging stale
+        # rows forward.
+        moved = _wipe_if_root_moved(idx, pkg_path)
+
+        for file in iter_source_files(pkg_path, cfg):
+            file_str = str(file.resolve())
+            data = file.read_bytes()
+            sha = sha_bytes(data)
+            if idx.current_sha(file_str) == sha:
+                counts["skipped"] += 1
+                continue
+            parser = parser_for(file.suffix)
+            assert parser is not None
+            result = parser.parse(file, pkg_path)
+            idx.ingest(file_str, parser.language, sha, result)
+            counts["updated"] += 1
+            counts["symbols"] += len(result.symbols)
+
+        demoted = idx.demote_unresolved_calls()
+        idx.promote_self_calls()
+        embedded = _embed_missing(idx)
+    finally:
+        idx.close()
+
+    return {
+        "package": name,
+        "package_path": str(pkg_path),
+        "files_updated": counts["updated"],
+        "files_unchanged": counts["skipped"],
+        "symbols_indexed": counts["symbols"],
+        "calls_demoted": demoted,
+        "symbols_embedded": embedded,
+        "package_moved": moved,
     }
 
 

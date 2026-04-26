@@ -15,12 +15,25 @@ from pathlib import Path
 from snapctx.index import Index, db_path_for
 
 
-def open_index(root: Path) -> Index:
-    """Open the index for ``root``, raising a friendly error if missing."""
-    db = db_path_for(root)
+def open_index(root: Path, scope: str | None = None) -> Index:
+    """Open the index for ``root`` (or one of its vendor packages).
+
+    ``scope=None`` opens the repo's own index. A non-None scope is the
+    name of a vendor package — opens
+    ``<root>/.snapctx/vendor/<scope>/index.db`` instead. Raises a
+    friendly error when the file doesn't exist; for vendor scopes the
+    caller typically calls ``vendor.ensure_vendor_indexed`` first.
+    """
+    db = db_path_for(root, scope=scope)
     if not db.exists():
+        if scope is None:
+            raise FileNotFoundError(
+                f"No index at {db}. Run `snapctx index {root}` first."
+            )
         raise FileNotFoundError(
-            f"No index at {db}. Run `snapctx index {root}` first."
+            f"No vendor index at {db}. The package {scope!r} hasn't been "
+            f"indexed yet — run a query prefixed with `{scope}:` to "
+            f"ingest it on demand."
         )
     return Index(db)
 

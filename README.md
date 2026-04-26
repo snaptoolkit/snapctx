@@ -117,9 +117,10 @@ extra_include = ["vendor/internal-fork/**"]
 extra_exclude = ["docs/generated/**", "**/*.snapshot.tsx"]
 
 # Toggles (defaults match current behavior).
-skip_vendor_bundles = true       # filter .min.js / *-bundle.js / .map / ...
-respect_gitignore   = true       # honor .gitignore
-max_file_size       = 256000     # bytes; default 250 KiB
+skip_vendor_bundles  = true      # filter .min.js / *-bundle.js / .map / ...
+skip_vendor_packages = true      # filter node_modules / .venv / vendor / ...
+respect_gitignore    = true      # honor .gitignore
+max_file_size        = 256000    # bytes; default 250 KiB
 
 # Restrict to specific parsers (default: every parser is active).
 # Valid values: "python", "typescript".
@@ -127,6 +128,58 @@ languages = ["python", "typescript"]
 ```
 
 Unknown keys are tolerated for forward-compatibility; type errors on known keys raise with the file path so they're easy to fix.
+
+### Third-party packages (on-demand, isolated per package)
+
+A query can target a third-party package by **prefixing the package name**. No prefix → the repo's own code, full stop. Prefixed → snapctx ensures that one package is indexed (one-time, on demand) and runs the query against the package's *own* isolated index.
+
+```bash
+# Repo only — no vendor packages searched.
+snapctx context "session login"
+
+# Routes to django's per-package index. First call ingests just django
+# (one-time ~50s for ~900 files). Subsequent calls are zero-cost.
+snapctx context "django: queryset filter chain lazy"
+# stderr: snapctx: indexing vendor package django at .venv/.../django (one-time)...
+# stderr: snapctx: vendor package django ready (899 files, 14021 symbols).
+# stdout: { "scope": "django", "seeds": [{ "qname": "db.models.query:QuerySet._chain", ... }] }
+```
+
+**Why per-package isolation rather than merging into the repo's index?** Two reasons. (1) Vector-search neighborhoods are sharper over a single coherent corpus — searching for `QuerySet` inside the django scope can't be polluted by the user's own filter classes. (2) Qnames inside the package's index are re-rooted at the package itself, so they look like Django's actual module structure (`db.models.query:QuerySet`) instead of a long `.venv.lib.pythonX.Y.site-packages.django.…` prefix.
+
+**Storage layout:**
+
+```
+<root>/.snapctx/
+  index.db                  ← repo (default — what queries hit with no prefix)
+  vendor/
+    django/index.db         ← one isolated index per indexed package
+    react/index.db
+```
+
+**Routing rules** for the `<pkg>:` prefix:
+- The head must be a single identifier (letters, digits, underscore, hyphen) — `django.db.models:QuerySet` stays a qname, not a prefix.
+- The head must match a directory under one of the discovered package locations: `<root>/{.venv,venv,env}/lib/python*/site-packages/<name>/` (Python) or `<root>/node_modules/<name>/` (Node, top-level). An already-indexed package also matches even if its source dir was later deleted.
+- No match → no routing, the colon is treated as part of the query (or qname).
+
+**Manual control** for commands that don't take a free-text query (`outline`, `source`, `expand`):
+
+```bash
+# Equivalent of writing "django: …" — route this op to django's index.
+snapctx source --pkg django "db.models.query:QuerySet"
+
+# See what's been indexed and what's installed (but unindexed).
+snapctx vendor list
+
+# Drop a package's whole index (the .snapctx/vendor/<name>/ directory).
+snapctx vendor forget django
+```
+
+`--pkg` is available on `search`, `context`, `expand`, `outline`, and `source`. Multi-root projects: vendor scoping is single-root only — run from inside the specific sub-project that owns the venv.
+
+**Subsequent scoped calls are fast.** A repo query auto-refreshes the repo's index (SHA-skip ~750 ms on a 300-file project). A scoped query *skips* the repo refresh entirely — the repo's index isn't being queried — and the vendor index is built-once-and-forget. End-to-end latency: ~350 ms warm, dominated by fastembed model load. Inside `snapctx watch` (or any long-running process where the model stays loaded) this drops further to single-digit ms.
+
+**Cross-package call graph (lazy stitching).** When `expand` or `context` traverses a call inside one indexed package and the callee was imported from *another also-indexed* package, the resolver follows the file's `imports` table to the right sibling index and returns the resolved symbol with a `package` tag. Example: inside django, `tasks.base:Task.call` invokes `async_to_sync`; if you've also indexed `asgiref:`, `expand` returns `{"qname": "sync:async_to_sync", "package": "asgiref", ...}` instead of an unresolved name. Honors the explicit-prefix rule: cross-resolution *only* peeks into packages you've already chosen to index — it never spontaneously fans out into something you didn't ask for. Indexes for the unresolved cross-package call get reported as `unresolved` with the bare callee name, and the user can index that package to see the edge resolve next time.
 
 ---
 
@@ -166,6 +219,7 @@ Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outline
 - **No setup**: queries auto-index on first use; auto-refresh on subsequent runs picks up your edits.
 - **No `--root`**: snapctx walks up from CWD to find the nearest `.snapctx/index.db`.
 - **Monorepos**: launching from a parent of indexed sub-projects fans out queries; each result has a `root` field (`"backend"` / `"frontend"`).
+- **Third-party code on demand**: prefix a query with a package name (`"django: queryset filter"`) to route to that package's own isolated index. First use ingests the package; subsequent calls are zero-cost. No prefix → repo only. `--pkg <name>` is the equivalent for ops without a free-text query (`source`, `outline`, `expand`).
 - **Filters**: `--kind function|method|class|component|constant|interface|type` to narrow results.
 
 ### When to fall back to Grep
@@ -196,6 +250,7 @@ snapctx is a local read-mostly CLI. Worth understanding what it touches.
   - Python (`.py`, `.pyi`) and TypeScript (`.ts`, `.tsx`, `.js`, `.jsx`) source — **not** `.env`, credentials, logs, binaries.
   - Respects `.gitignore` — anything excluded there is invisible.
   - Skips `.git`, `.venv`, `node_modules`, `__pycache__`, `.snapctx`, `dist`, `build`, `.tox` by default.
+  - On-demand vendor indexing reads from `.venv/lib/python*/site-packages/<name>/` and `node_modules/<name>/` *only* when a query is prefixed with `<name>:` or `--pkg <name>` is passed. Stored separately under `.snapctx/vendor/<name>/`.
 
 **What it writes:**
 - Exactly one place: `<root>/.snapctx/index.db` (+ WAL/SHM sidecars). Nothing else on disk is ever touched.
@@ -486,8 +541,10 @@ snapctx/
                         #   + multi-root variants (search_code_multi, context_multi, ...)
     roots.py            # auto-discovery: walk-up to nearest .snapctx, walk-down for sub-projects
     config.py           # snapctx.toml loader (WalkerConfig dataclass; tomllib-backed)
-    cli.py              # argparse entry point (index, search, expand, outline,
-                        #                       source, context, watch, roots)
+    vendor.py           # query-driven on-demand indexing of third-party packages
+                        #   (.venv site-packages, node_modules)
+    cli.py              # argparse entry point (index, search, expand, outline, source,
+                        #                       context, watch, roots, vendor)
   tests/
     fixtures/sample_pkg/
     test_parser.py  test_qname.py  test_api.py  test_constants.py
@@ -508,7 +565,7 @@ uv pip install --group dev      # or: uv pip install pytest
 pytest
 ```
 
-100+ tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
+170+ tests currently pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
 
 ---
 
@@ -532,6 +589,8 @@ pytest
 - [x] **Per-repo config** — optional `snapctx.toml` at the root overrides walker defaults (skip dirs, vendor filter, file-size cap, glob include/exclude, language enable list); no config means no behavior change
 - [x] **Multi-root fan-out** — queries from a parent dir hit every indexed sub-project in parallel and tag results with their `root` label
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
+- [x] **On-demand vendor packages with per-package isolation** — prefix a query with `<pkg>:` (or pass `--pkg <name>`) and snapctx ingests just that package into its own dedicated index at `.snapctx/vendor/<name>/index.db`, then answers from there. Vector neighborhoods stay focused (no cross-namespace pollution) and qnames re-root at the package (`db.models.query:QuerySet`, not the long venv path). No prefix → repo only. Managed via `snapctx vendor list` / `vendor forget`
+- [x] **Cross-package call-graph stitching** — when a call inside one indexed package targets a name imported from another *also-indexed* package, `expand` and `context` follow the import to the sibling index and return the resolved symbol tagged with its package. Lazy (only kicks in when the user has indexed both ends), cached per query operation
 
 **Planned next (snapctx core):**
 - [ ] **`snapctx serve` daemon** — long-running process holds the fastembed model + SQLite handle warm; CLI invocations talk to it over a Unix socket. Closes the ~400 ms cold-CLI gap so every query is 5–10 ms whether or not you have `snapctx watch` running. Lifecycle: auto-start on first query, idle-stop after N minutes, single-instance lock per repo.

@@ -29,9 +29,10 @@ extra_include = ["vendor/internal-fork/**"]
 extra_exclude = ["docs/generated/**", "**/*.snapshot.tsx"]
 
 # Toggles (defaults match current behavior).
-skip_vendor_bundles = true       # filter .min.js / *-bundle.js / .map / ...
-respect_gitignore   = true       # honor the repo's .gitignore
-max_file_size       = 256000     # bytes; default 250 KiB
+skip_vendor_bundles  = true      # filter .min.js / *-bundle.js / .map / ...
+skip_vendor_packages = true      # filter node_modules / .venv / vendor / ...
+respect_gitignore    = true      # honor the repo's .gitignore
+max_file_size        = 256000    # bytes; default 250 KiB
 
 # Restrict to specific languages. Default: every parser is active.
 # Valid values: "python", "typescript".
@@ -68,6 +69,7 @@ class WalkerConfig:
     extra_include: tuple[str, ...] = ()
     extra_exclude: tuple[str, ...] = ()
     skip_vendor_bundles: bool = True
+    skip_vendor_packages: bool = True
     respect_gitignore: bool = True
     max_file_size: int = DEFAULT_MAX_FILE_SIZE
     # ``None`` = every registered parser is active. Otherwise restrict
@@ -112,6 +114,7 @@ def load_config(root: Path) -> Config:
         extra_include=_str_tuple(walker_data, "extra_include", path),
         extra_exclude=_str_tuple(walker_data, "extra_exclude", path),
         skip_vendor_bundles=_bool(walker_data, "skip_vendor_bundles", path, True),
+        skip_vendor_packages=_bool(walker_data, "skip_vendor_packages", path, True),
         respect_gitignore=_bool(walker_data, "respect_gitignore", path, True),
         max_file_size=_int(walker_data, "max_file_size", path, DEFAULT_MAX_FILE_SIZE),
         languages=_str_set_optional(walker_data, "languages", path),

@@ -16,11 +16,19 @@ from snapctx.parsers.registry import (
 
 ALWAYS_SKIP = {
     ".git", ".hg", ".svn",
-    ".venv", "venv", "env",
-    "node_modules", "bower_components", "vendor",
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     "dist", "build", ".tox",
     ".snapctx",
+}
+
+# Third-party-dependency directories. Skipped by default because they are
+# not the user's code and a single ``node_modules`` tree can dwarf the
+# repo's real source by 100×. Toggleable via
+# ``[walker].skip_vendor_packages = false`` for the rare case where you
+# genuinely need to search inside deps (e.g. debugging an upstream bug).
+VENDOR_PACKAGE_DIRS = {
+    ".venv", "venv", "env",
+    "node_modules", "bower_components", "vendor",
 }
 
 # Filename suffixes that indicate bundled/minified third-party code. Parsing
@@ -34,6 +42,20 @@ _VENDOR_BUNDLE_SUFFIXES = (
     "-bundle.js", "-bundle.mjs",              # e.g. swagger-ui-bundle.js
     ".standalone.js", ".lib.js",              # e.g. redoc.standalone.js
 )
+
+
+def skip_dirs_for(cfg: WalkerConfig) -> set[str]:
+    """Return the set of directory names to skip given a walker config.
+
+    Centralizes the union of ``ALWAYS_SKIP``, vendor-package dirs (when
+    enabled), and the user's ``extra_skip_dirs`` so the walker and the
+    watcher (which both need to know "is this path under a skipped dir?")
+    stay in sync as the rules evolve.
+    """
+    skip = ALWAYS_SKIP | set(cfg.extra_skip_dirs)
+    if cfg.skip_vendor_packages:
+        skip |= VENDOR_PACKAGE_DIRS
+    return skip
 
 
 def load_gitignore(root: Path) -> pathspec.PathSpec:
@@ -60,7 +82,7 @@ def iter_source_files(
     cfg = config or WalkerConfig()
     root = root.resolve()
 
-    skip_dirs = ALWAYS_SKIP | set(cfg.extra_skip_dirs)
+    skip_dirs = skip_dirs_for(cfg)
     skip_suffixes = (
         _VENDOR_BUNDLE_SUFFIXES + cfg.extra_skip_suffixes
         if cfg.skip_vendor_bundles

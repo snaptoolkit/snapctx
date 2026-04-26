@@ -33,6 +33,13 @@ from snapctx.api import (
     search_code_multi,
 )
 from snapctx.roots import discover_roots, root_label
+from snapctx.vendor import (
+    discover_packages,
+    ensure_vendor_indexed,
+    forget_vendor,
+    list_indexed_vendors,
+    parse_query_prefix,
+)
 from snapctx.watch import run_watch
 
 
@@ -63,9 +70,19 @@ class QueryCommand:
 
     def call(self, args: argparse.Namespace, roots: list[Path], anchor: Path) -> dict:
         kwargs = {a: getattr(args, a) for a in self.arg_names}
+        scope = getattr(args, "scope", None)
         if len(roots) > 1:
+            if scope is not None:
+                # v1 simplification: vendor packages are per-root, and we
+                # don't have a meaningful "merge X across N vendor indexes"
+                # story yet. Surface the conflict explicitly.
+                raise SystemExit(
+                    f"snapctx: vendor scope ({scope!r}) is not supported across "
+                    f"multiple roots. Run from inside one of: "
+                    f"{', '.join(str(r) for r in roots)}"
+                )
             return self.multi(roots=roots, anchor=anchor, **kwargs)
-        return self.single(root=roots[0], **kwargs)
+        return self.single(root=roots[0], scope=scope, **kwargs)
 
 
 _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
@@ -182,6 +199,21 @@ def _refresh_indexes(roots: list[Path]) -> None:
 # ---------- argparse setup ----------
 
 
+def _add_vendor_args(p: argparse.ArgumentParser) -> None:
+    """Attach the vendor-scope flag shared by every query command.
+
+    ``--pkg <name>`` is the explicit form of the ``<pkg>:`` query prefix:
+    route this query to the per-package index for ``<name>`` instead of
+    the repo's. Useful when the operation doesn't take a free-text query
+    (``outline``, ``source``, ``expand``) so the prefix-in-query trick
+    doesn't apply.
+    """
+    p.add_argument(
+        "--pkg", default=None, metavar="NAME",
+        help="Run against the named vendor package's index (e.g. --pkg django).",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="snapctx", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -208,6 +240,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Ranker. hybrid = RRF of FTS5 + embeddings (default).",
     )
     p_search.add_argument("--root", default=".")
+    _add_vendor_args(p_search)
 
     p_expand = sub.add_parser("expand", help="Walk the call graph around a qname.")
     p_expand.add_argument("qname")
@@ -216,15 +249,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_expand.add_argument("--depth", type=int, default=1)
     p_expand.add_argument("--root", default=".")
+    _add_vendor_args(p_expand)
 
     p_outline = sub.add_parser("outline", help="Show the symbol tree of a file.")
     p_outline.add_argument("path")
     p_outline.add_argument("--root", default=".")
+    _add_vendor_args(p_outline)
 
     p_source = sub.add_parser("source", help="Show the source of a single symbol.")
     p_source.add_argument("qname")
     p_source.add_argument("--with-neighbors", action="store_true")
     p_source.add_argument("--root", default=".")
+    _add_vendor_args(p_source)
 
     p_context = sub.add_parser(
         "context",
@@ -244,6 +280,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_context.add_argument("--mode", choices=["lexical", "vector", "hybrid"], default="hybrid")
     p_context.add_argument("--kind", default=None)
     p_context.add_argument("--root", default=".")
+    _add_vendor_args(p_context)
+
+    p_vendor = sub.add_parser(
+        "vendor",
+        help="List or forget on-demand-indexed third-party packages.",
+    )
+    vendor_sub = p_vendor.add_subparsers(dest="vendor_cmd", required=True)
+    p_vendor_list = vendor_sub.add_parser(
+        "list", help="Show indexed vendor packages (and what's available to index)."
+    )
+    p_vendor_list.add_argument("--root", default=".")
+    p_vendor_forget = vendor_sub.add_parser(
+        "forget", help="Drop a vendor package's symbols from the index."
+    )
+    p_vendor_forget.add_argument("name")
+    p_vendor_forget.add_argument("--root", default=".")
 
     p_roots = sub.add_parser(
         "roots",
@@ -274,16 +326,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "roots":
         return _print_roots(args.root)
 
-    # Query commands: discover, ensure index is fresh, dispatch.
+    if args.cmd == "vendor":
+        return _vendor_dispatch(args)
+
+    # Query commands: discover, resolve scope, ensure relevant index is fresh, dispatch.
     roots, anchor = _resolve_roots(args.root)
     if not roots:
         roots = _bootstrap_first_index(anchor)
         if not roots:
             return 2
-    else:
-        # Incremental refresh — picks up edits since the last query so
-        # results always reflect current code. Cheap (SHA-skip) when
-        # nothing changed.
+
+    # Scope resolution is cheap (~3 ms) so we run it BEFORE the repo
+    # auto-refresh: if the query is scoped to a vendor package, the repo's
+    # index isn't being queried and SHA-skipping its 300+ files is pure
+    # waste (~750 ms on a real project). Vendor packages are
+    # built-once-and-forget — no per-call refresh needed.
+    _resolve_query_scope(roots, args)
+    if args.scope is None:
         _refresh_indexes(roots)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
@@ -293,6 +352,80 @@ def main(argv: list[str] | None = None) -> int:
 
     print(json.dumps(cmd.call(args, roots, anchor), indent=2))
     return 0
+
+
+def _resolve_query_scope(roots: list[Path], args: argparse.Namespace) -> None:
+    """Pick the right index for this query: repo's own, or one vendor package's.
+
+    Two routing inputs:
+    - ``<pkg>: <rest>`` prefix in the free-text query field (``query`` for
+      search/context). The prefix is stripped from the query before
+      dispatch so the index sees just the actual question.
+    - ``--pkg <name>`` flag (``args.pkg``). Same effect, available on
+      every query command for cases without a free-text field.
+
+    With either input, the vendor package is built on demand (no-op when
+    already indexed). The resolved scope is attached as ``args.scope``
+    for ``QueryCommand.call`` to forward to the api function.
+
+    No prefix and no flag → ``args.scope`` stays ``None`` and the query
+    runs against the repo's own index.
+    """
+    args.scope = None
+    explicit = getattr(args, "pkg", None)
+    query_text = getattr(args, "query", None) or ""
+    root = roots[0]  # vendor scope is single-root only (enforced at dispatch)
+
+    scope: str | None = None
+    if explicit:
+        scope = explicit
+    elif query_text:
+        prefix, stripped = parse_query_prefix(query_text, root)
+        if prefix is not None:
+            scope = prefix
+            args.query = stripped
+
+    if scope is None:
+        return
+
+    if len(roots) > 1:
+        # Defer the multi-root check to dispatch time so the error path is
+        # consistent — but record the scope so QueryCommand.call surfaces it.
+        args.scope = scope
+        return
+
+    ensure_vendor_indexed(root, scope)
+    args.scope = scope
+
+
+def _vendor_dispatch(args: argparse.Namespace) -> int:
+    roots, _ = _resolve_roots(args.root)
+    if not roots:
+        sys.stderr.write(
+            f"snapctx: no .snapctx/index.db reachable from {args.root}. "
+            f"Run a query or `snapctx index` first.\n"
+        )
+        return 2
+    root = roots[0]
+
+    if args.vendor_cmd == "list":
+        indexed = list_indexed_vendors(root)
+        available = sorted(discover_packages(root).keys())
+        print(json.dumps(
+            {"root": str(root), "indexed": indexed, "available": available},
+            indent=2,
+        ))
+        return 0
+
+    if args.vendor_cmd == "forget":
+        ok = forget_vendor(root, args.name)
+        print(json.dumps(
+            {"root": str(root), "package": args.name, "removed": ok},
+            indent=2,
+        ))
+        return 0 if ok else 1
+
+    return 2
 
 
 def _print_roots(start: str) -> int:

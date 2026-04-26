@@ -48,6 +48,7 @@ def context(
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
     kind: str | None = None,
     root: str | Path = ".",
+    scope: str | None = None,
 ) -> dict:
     """Gather everything an agent needs about ``query`` in one call.
 
@@ -75,7 +76,7 @@ def context(
     """
     root_path = Path(root).resolve()
     seeds, candidates, mode = _seeds_for_query(
-        query, root_path, k_seeds, outline_discovery_k, kind, mode
+        query, root_path, k_seeds, outline_discovery_k, kind, mode, scope=scope,
     )
 
     if not seeds:
@@ -87,7 +88,9 @@ def context(
             "token_estimate": 0,
         }
 
-    idx = open_index(root_path)
+    from snapctx.api._cross_package import CrossPackageResolver
+    idx = open_index(root_path, scope=scope)
+    resolver = CrossPackageResolver(root_path, current_scope=scope)
     try:
         enriched = [
             _enrich_seed(
@@ -96,19 +99,23 @@ def context(
                 expand_depth=expand_depth,
                 source_for_top=source_for_top,
                 body_char_cap=body_char_cap,
+                resolver=resolver,
             )
             for i, seed in enumerate(seeds)
         ]
         file_outlines = _file_outlines(idx, candidates, file_outline_limit)
     finally:
+        resolver.close()
         idx.close()
 
-    payload = {
+    payload: dict = {
         "query": query,
         "mode": mode,
         "seeds": enriched,
         "file_outlines": file_outlines,
     }
+    if scope is not None:
+        payload["scope"] = scope
     payload["token_estimate"] = rough_token_count(payload)
     payload["hint"] = (
         "This response bundles search + callees + callers + top sources + a file outline. "
@@ -124,6 +131,8 @@ def _seeds_for_query(
     outline_discovery_k: int,
     kind: str | None,
     mode: str,
+    *,
+    scope: str | None = None,
 ) -> tuple[list[dict], list[dict], str]:
     """Return ``(visible_seeds, broader_candidates, effective_mode)``.
 
@@ -132,7 +141,7 @@ def _seeds_for_query(
     the original mode.
     """
     if ":" in query:
-        idx_tmp = open_index(root_path)
+        idx_tmp = open_index(root_path, scope=scope)
         try:
             direct = idx_tmp.get_symbol(query)
         finally:
@@ -151,7 +160,8 @@ def _seeds_for_query(
             return [seed], [seed], "exact"
 
     search_result = search_code(
-        query, k=max(k_seeds, outline_discovery_k), kind=kind, root=root_path, mode=mode
+        query, k=max(k_seeds, outline_discovery_k), kind=kind,
+        root=root_path, mode=mode, scope=scope,
     )
     candidates = search_result["results"]
     return candidates[:k_seeds], candidates, mode
@@ -166,6 +176,7 @@ def _enrich_seed(
     expand_depth: int,
     source_for_top: int,
     body_char_cap: int,
+    resolver=None,
 ) -> dict:
     """Attach callees/callers, source, and (for constants) alias resolution."""
     qname = seed["qname"]
@@ -183,8 +194,14 @@ def _enrich_seed(
         entry["decorators"] = seed["decorators"]
 
     depth = max(1, expand_depth)
-    callees = collect_neighbors(idx, qname, direction="callees", limit=neighbor_limit, depth=depth)
-    callers = collect_neighbors(idx, qname, direction="callers", limit=neighbor_limit, depth=depth)
+    callees = collect_neighbors(
+        idx, qname, direction="callees",
+        limit=neighbor_limit, depth=depth, resolver=resolver,
+    )
+    callers = collect_neighbors(
+        idx, qname, direction="callers",
+        limit=neighbor_limit, depth=depth, resolver=resolver,
+    )
     if callees:
         entry["callees"] = callees
     if callers:
