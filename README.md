@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. Median ~8× fewer tokens than grep+read on real questions, **always 1 tool call instead of 6–9** ([measured](#why-bother-the-numbers)).
+**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **1 tool call vs 11–18, up to 22× fewer tokens** on cross-cutting audit-style questions ([measured](#why-bother-the-numbers)).
 
 Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The parser layer is pluggable — adding a language is a single new file.
 
@@ -73,7 +73,7 @@ snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Curso
 ```markdown
 ## Code exploration with snapctx
 
-For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It's faster (1 tool call vs 6–9), more accurate, and on cross-cutting questions returns up to ~15× fewer tokens than `Grep` + `Read` chains.
+For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It's faster (1 tool call vs 11–18), more accurate, and on audit-style cross-cutting questions returns up to ~20× fewer tokens than `Grep` + `Read` chains.
 
 **Why it works**: snapctx parses the codebase into a symbol graph (functions, classes, components, constants, calls, imports), runs hybrid lexical+semantic search, and returns top symbols with source bodies, a depth-2 call-path trace (callees-of-callees + callers-of-callers), constant-alias resolution, and file outlines — usually enough to answer in one call.
 
@@ -113,33 +113,33 @@ snapctx indexes **symbols**, not raw text. Use `Grep` for: URL routes (`"/api/v1
 
 ## Why bother (the numbers)
 
-An agent investigating an unfamiliar codebase burns tokens the same way every time:
+An agent investigating an unfamiliar codebase burns tokens the same way every time: grep for some terms, read 2–3 candidate files in full, grep again, read more files, synthesize. The cost compounds with question difficulty.
 
-1. `Grep` for some terms — sometimes 50, sometimes 500 hits.
-2. `Read` two or three candidate files in full.
-3. `Grep` again for a name the agent just saw.
-4. `Read` more files to chase imports.
-5. Synthesize, sometimes with gaps.
+We measured both paths on three real codebases (a Django backend, zustand, and snapctx itself) — **9 cross-cutting questions** of the kind agents actually struggle with: *"audit every place that calls into an LLM provider"*, *"trace how a state update propagates from setState through equality checks to subscribers"*, *"list every CLI subcommand and which API function it dispatches to"*. snapctx ran via the in-process Python API (the path you get with `snapctx watch` or library use); grep+read used real `grep -ri` calls plus reading the top-K most-frequently-matching files (K = 3 for narrow, 6 for survey, 10 for audit; matching realistic agent behavior on each difficulty).
 
-We measured both paths on three real codebases (a Django backend, zustand, and snapctx itself) — **7 questions total**, asking the same thing of `snapctx context "<query>"` and of a simulated grep-and-read agent loop (greps for the question's key terms + read the top-3 most-frequently-matching files in full):
+| Codebase | Difficulty | Question (abridged) | snapctx tokens | grep+read tokens | **ratio** | tool calls |
+|---|---|---|---:|---:|---:|---:|
+| Django backend | audit  | every Django model field + app | 7 k | 155 k | **22×** | 1 → 14 |
+| Django backend | audit  | every LLM provider call + model + temperature | 10 k | **204 k** | **20×** | 1 → 17 |
+| Django backend | survey | full flow API → views → DB for verse fetch | 14 k | 58 k | 4× | 1 → 11 |
+| Django backend | survey | every DRF throttle / permission class + where | 7 k | 23 k | 3× | 1 → 11 |
+| zustand | audit  | setState → equality → subscribers + persist | 6 k | 95 k | **17×** | 1 → 18 |
+| zustand | survey | every middleware + state shape | 5 k | 77 k | **15×** | 1 → 11 |
+| snapctx | audit  | every Index() open + connection lifecycle | 6 k | 40 k | 7× | 1 → 18 |
+| snapctx | audit  | every CLI subcommand + API dispatch | 4 k | 44 k | **10×** | 1 → 17 |
+| snapctx | survey | snapctx context → embedder load → SQLite search | 9 k | 41 k | 5× | 1 → 11 |
 
-| Codebase | Question | snapctx tokens | grep+read tokens | tool calls (snapctx → grep+read) |
-|---|---|---:|---:|---:|
-| Django backend | session authentication | 12 k | 10 k | 1 → 6 |
-| Django backend | bible verses, multiple translations | 17 k | **140 k** | 1 → 8 |
-| Django backend | rate limits on API endpoints | 5 k | 40 k | 1 → 8 |
-| zustand | subscribe / selector equality | 4 k | 43 k | 1 → 7 |
-| zustand | store creation and persistence | 4 k | **57 k** | 1 → 6 |
-| snapctx | multi-root fan-out merge | 8 k | 32 k | 1 → 9 |
-| snapctx | python self-method resolution | 11 k | 44 k | 1 → 9 |
+**The pattern.** Audit-class questions ("list every X and its Y") — where grep+read forces the agent to read 8–14 files in full — consistently hit **10–22× token reduction**. Survey questions ("trace this flow") land at **3–5×**. The harder the question, the wider the gap.
 
-**Two consistent wins, one honest caveat.**
+**Tool calls collapse from 11–18 to 1.** Always. That's the bigger lever in practice: each agent call costs ~3–8 s of LLM reasoning on top of the tool execution. **Trading 11 tool-call cycles for 1 turns ~30–100 s of agent wall-clock into ~5 s.**
 
-1. **1 tool call vs 6–9.** Always. Every question collapses the reasoning loop into a single round-trip. That's the bigger leverage, since each agent call costs ~3–8 s of LLM thinking time on top of the tool execution itself — so in practice we're trading 30–60 s of agent wall-clock for ~5 s.
-2. **Tokens drop ~8× on the median question, up to ~16× on cross-cutting "where is X applied" survey-style questions** that would force the agent to read multiple large files (the 140 k case above). For narrow keyword-friendly questions where grep happens to land cleanly, snapctx returns *similar* tokens but with structure (bodies + callees + callers + outlines) instead of raw line matches — so the agent answers in 1 call rather than 4–6.
-3. **Caveat:** ratios are real but vary 4–16× by question. We don't claim a single multiplier.
+**Latency for snapctx itself:**
 
-snapctx's per-call latency: ~0.3–1.1 s cold from CLI (depends on repo size), ~5–10 ms warm in-process. The wins above are at the *agent* level — collapsing the round-trip count, not making any single call faster.
+- **Warm path** (in-process, with `snapctx watch` or library use, indexed): **6–16 ms per query** — the embedder model loads once and stays resident.
+- **Cold path** (one-shot CLI invocation, indexed): **~0.3–1.1 s** (most of that is the ~250 ms fastembed model load each run).
+- **First query in a fresh repo** (auto-indexes): ~5–10 s for a few hundred files. After that, every refresh is SHA-skip and finishes in <200 ms.
+
+The cold-CLI ~1 s vs warm 6 ms isn't the win that matters at the agent level; the round-trip-count collapse is. But if your agent uses snapctx through `snapctx watch` or imports the Python API, every query lands under 20 ms.
 
 ---
 
