@@ -57,6 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--mode", default="hybrid")
     ps.add_argument("--kind", default=None)
     ps.add_argument("--with-bodies", dest="with_bodies", action="store_true")
+    ps.add_argument("--also", action="append", default=[], metavar="TERM")
 
     pe = sub.add_parser("expand")
     pe.add_argument("qname")
@@ -84,7 +85,7 @@ _OP_FOR = {
     }),
     "search": ("search", lambda a: {
         "query": a.query, "k": a.k, "mode": a.mode, "kind": a.kind,
-        "with_bodies": a.with_bodies,
+        "with_bodies": a.with_bodies, "also": a.also or None,
     }),
     "expand": ("expand", lambda a: {
         "qname": a.qname, "direction": a.direction, "depth": a.depth,

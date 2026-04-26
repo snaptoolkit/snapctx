@@ -87,7 +87,7 @@ class QueryCommand:
 
 _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
     QueryCommand("search", search_code, search_code_multi,
-                 arg_names=("query", "k", "kind", "mode", "with_bodies")),
+                 arg_names=("query", "k", "kind", "mode", "with_bodies", "also")),
     QueryCommand("expand", expand, expand_multi,
                  arg_names=("qname", "direction", "depth")),
     QueryCommand("outline", outline, outline_multi,
@@ -245,6 +245,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Inline each hit's source body so audit-style 'list every X' "
             "queries get all the source they need in one call. Pair with "
             "a higher -k (e.g. -k 20)."
+        ),
+    )
+    p_search.add_argument(
+        "--also", action="append", default=[], metavar="TERM",
+        help=(
+            "Add another search term, repeatable. ``--also openai --also "
+            "gemini`` runs three searches in one call and merges the "
+            "results — ideal for cross-cutting audits over multiple "
+            "keywords. Top-k applies to the merged result set."
         ),
     )
     p_search.add_argument("--root", default=".")

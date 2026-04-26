@@ -106,6 +106,7 @@ def search_code_multi(
     kind: str | None = None,
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
     with_bodies: bool = False,
+    also: tuple[str, ...] | list[str] | None = None,
     anchor: Path | None = None,
 ) -> dict:
     """Run ``search_code`` across multiple roots and merge by score."""
@@ -116,7 +117,8 @@ def search_code_multi(
 
     ok, errors = _fan_out(
         lambda r: search_code(
-            query, k=k, kind=kind, root=r, mode=mode, with_bodies=with_bodies,
+            query, k=k, kind=kind, root=r, mode=mode,
+            with_bodies=with_bodies, also=also,
         ),
         roots, anchor=anchor,
     )

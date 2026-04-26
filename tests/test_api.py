@@ -84,6 +84,43 @@ def test_search_with_bodies_skips_constants_when_off(tmp_path: Path) -> None:
         assert "referenced_constants" not in hit
 
 
+def test_search_also_unions_multi_term_results(tmp_path: Path) -> None:
+    """``also=[...]`` runs the search across multiple terms in ONE call,
+    deduping and merging — exactly the audit-class case where the agent
+    today fires N separate searches for N keywords."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "anth.py").write_text("def call_anthropic_api(): pass\n")
+    (repo / "oai.py").write_text("def call_openai_api(): pass\n")
+    (repo / "gem.py").write_text("def call_gemini_api(): pass\n")
+    index_root(repo)
+
+    out = search_code(
+        "anthropic", k=10, root=repo, also=["openai", "gemini"],
+    )
+    qnames = {r["qname"] for r in out["results"]}
+    assert "anth:call_anthropic_api" in qnames
+    assert "oai:call_openai_api" in qnames
+    assert "gem:call_gemini_api" in qnames
+    assert out["also"] == ["openai", "gemini"]
+
+
+def test_search_also_dedupes_when_terms_overlap(tmp_path: Path) -> None:
+    """A symbol matched by two different terms should appear once, not twice."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "x.py").write_text("def anthropic_openai_handler(): pass\n")
+    index_root(repo)
+
+    out = search_code("anthropic", k=10, root=repo, also=["openai"])
+    qnames = [r["qname"] for r in out["results"]]
+    assert qnames.count("x:anthropic_openai_handler") == 1
+
+
 def test_search_with_bodies_caps_long_bodies(indexed_root: Path) -> None:
     """Bodies are truncated past ``body_char_cap`` so a single audit
     call doesn't return arbitrarily large payloads."""
