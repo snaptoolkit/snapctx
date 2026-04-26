@@ -33,6 +33,57 @@ def test_search_without_bodies_omits_source(indexed_root: Path) -> None:
         assert "source" not in hit
 
 
+def test_search_with_bodies_inlines_referenced_constants(tmp_path: Path) -> None:
+    """A function body that references SCREAMING_SNAKE constants gets each
+    one's terminal literal inlined as ``referenced_constants``, so the
+    agent doesn't have to chase the constant in a separate round-trip."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "defaults.py").write_text(
+        "DEFAULT_MODEL = 'claude-opus-4-5'\n"
+        "DEFAULT_TEMP = 0.5\n"
+    )
+    (repo / "service.py").write_text(
+        "from defaults import DEFAULT_MODEL, DEFAULT_TEMP\n"
+        "\n"
+        "def call_anthropic(prompt):\n"
+        "    return client.messages.create(\n"
+        "        model=DEFAULT_MODEL,\n"
+        "        temperature=DEFAULT_TEMP,\n"
+        "        messages=[{'role': 'user', 'content': prompt}],\n"
+        "    )\n"
+    )
+    index_root(repo)
+
+    out = search_code("call anthropic", k=2, root=repo, with_bodies=True)
+    hit = next(h for h in out["results"] if h["qname"].endswith(":call_anthropic"))
+    consts = hit.get("referenced_constants") or {}
+    assert "DEFAULT_MODEL" in consts
+    assert "claude-opus-4-5" in consts["DEFAULT_MODEL"]["value"]
+    assert "DEFAULT_TEMP" in consts
+
+
+def test_search_with_bodies_skips_constants_when_off(tmp_path: Path) -> None:
+    """The enrichment is paired with ``with_bodies``; default search
+    response stays unchanged."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "defaults.py").write_text("DEFAULT_MODEL = 'claude-opus-4-5'\n")
+    (repo / "service.py").write_text(
+        "from defaults import DEFAULT_MODEL\n"
+        "def call_anthropic(): return DEFAULT_MODEL\n"
+    )
+    index_root(repo)
+
+    out = search_code("call anthropic", k=2, root=repo)  # no with_bodies
+    for hit in out["results"]:
+        assert "referenced_constants" not in hit
+
+
 def test_search_with_bodies_caps_long_bodies(indexed_root: Path) -> None:
     """Bodies are truncated past ``body_char_cap`` so a single audit
     call doesn't return arbitrarily large payloads."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from snapctx.api._aliases import resolve_referenced_constants
 from snapctx.api._common import (
     docstring_summary,
     open_index,
@@ -79,20 +80,28 @@ def search_code(
             pairs = rrf_merge(
                 lex_pairs, vec_pairs, limit=k, lex_weight=lw, vec_weight=vw, query=query
             )
+
+        results = []
+        for row, score in pairs:
+            d = row_to_symbol_dict(row)
+            d["docstring"] = docstring_summary(row["docstring"])
+            d["score"] = round(float(score), 4)
+            d["next_action"] = suggest_next_action(row)
+            if with_bodies:
+                body = _read_body(row, body_char_cap)
+                if body is not None:
+                    d["source"] = body
+                    # Inline literal values of any SCREAMING_SNAKE constants
+                    # referenced in the body. Saves the agent a follow-up
+                    # round-trip per ``DEFAULT_*_MODEL`` reference on audits.
+                    consts = resolve_referenced_constants(
+                        idx, body, exclude_qname=row["qname"],
+                    )
+                    if consts:
+                        d["referenced_constants"] = consts
+            results.append(d)
     finally:
         idx.close()
-
-    results = []
-    for row, score in pairs:
-        d = row_to_symbol_dict(row)
-        d["docstring"] = docstring_summary(row["docstring"])
-        d["score"] = round(float(score), 4)
-        d["next_action"] = suggest_next_action(row)
-        if with_bodies:
-            body = _read_body(row, body_char_cap)
-            if body is not None:
-                d["source"] = body
-        results.append(d)
 
     response: dict = {
         "query": query,
