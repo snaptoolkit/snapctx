@@ -13,6 +13,39 @@ def test_search_finds_refresh_method(indexed_root: Path) -> None:
     assert top["docstring"].startswith("Refresh")
 
 
+def test_search_with_bodies_inlines_source(indexed_root: Path) -> None:
+    """``--with-bodies`` is the audit-class one-shot path: ranked symbols
+    arrive with full source bodies inline so the agent doesn't have to
+    chase each hit with a separate ``get_source`` round-trip."""
+    out = search_code(
+        "refresh session token", k=3, root=indexed_root, with_bodies=True,
+    )
+    assert out["results"]
+    for hit in out["results"]:
+        assert "source" in hit, f"missing source on hit {hit['qname']}"
+        assert hit["source"], f"empty source on hit {hit['qname']}"
+
+
+def test_search_without_bodies_omits_source(indexed_root: Path) -> None:
+    """Default behavior unchanged — no ``source`` field unless asked."""
+    out = search_code("refresh session token", k=3, root=indexed_root)
+    for hit in out["results"]:
+        assert "source" not in hit
+
+
+def test_search_with_bodies_caps_long_bodies(indexed_root: Path) -> None:
+    """Bodies are truncated past ``body_char_cap`` so a single audit
+    call doesn't return arbitrarily large payloads."""
+    out = search_code(
+        "refresh session token", k=3, root=indexed_root,
+        with_bodies=True, body_char_cap=50,
+    )
+    for hit in out["results"]:
+        # 50-char cap + a small "truncated" footer; cap is generous to
+        # keep the test stable across formatter changes.
+        assert len(hit["source"]) < 200
+
+
 def test_exact_name_token() -> None:
     """Single identifier-shaped tokens trigger the name-match bonus; multi-word
     queries don't."""

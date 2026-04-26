@@ -32,6 +32,8 @@ def search_code(
     root: str | Path = ".",
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
     scope: str | None = None,
+    with_bodies: bool = False,
+    body_char_cap: int = 1500,
 ) -> dict:
     """Find symbols whose qname, signature, docstring, or decorators match ``query``.
 
@@ -47,6 +49,12 @@ def search_code(
     suggested ``next_action`` the caller should take (``expand`` the call graph
     around a seed, ``read_body`` if signature+docstring look insufficient, or
     ``enough`` when the docstring alone is self-explanatory).
+
+    ``with_bodies=True`` inlines each hit's source body (capped at
+    ``body_char_cap`` chars per hit) so audit-style queries — "list every X
+    that does Y" — can land all the source they need in one call instead of
+    chasing each result with a follow-up ``get_source`` call. Pair with a
+    higher ``k`` (e.g. ``k=20``) to overfetch.
     """
     root_path = Path(root).resolve()
     idx = open_index(root_path, scope=scope)
@@ -80,6 +88,10 @@ def search_code(
         d["docstring"] = docstring_summary(row["docstring"])
         d["score"] = round(float(score), 4)
         d["next_action"] = suggest_next_action(row)
+        if with_bodies:
+            body = _read_body(row, body_char_cap)
+            if body is not None:
+                d["source"] = body
         results.append(d)
 
     response: dict = {
@@ -91,3 +103,24 @@ def search_code(
     if scope is not None:
         response["scope"] = scope
     return response
+
+
+def _read_body(row, body_char_cap: int) -> str | None:
+    """Read a symbol's source slice from its file, capped at ``body_char_cap``.
+
+    Returns ``None`` when the file is unreadable so the response stays
+    JSON-clean. Slicing by stored line range avoids re-parsing.
+    """
+    try:
+        text = Path(row["file"]).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    start = max(1, int(row["line_start"]))
+    end = max(start, int(row["line_end"]))
+    body = "\n".join(lines[start - 1 : end])
+    if len(body) > body_char_cap:
+        body = body[:body_char_cap] + (
+            f"\n# ... truncated ({len(body) - body_char_cap} chars) ..."
+        )
+    return body

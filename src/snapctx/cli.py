@@ -87,7 +87,7 @@ class QueryCommand:
 
 _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
     QueryCommand("search", search_code, search_code_multi,
-                 arg_names=("query", "k", "kind", "mode")),
+                 arg_names=("query", "k", "kind", "mode", "with_bodies")),
     QueryCommand("expand", expand, expand_multi,
                  arg_names=("qname", "direction", "depth")),
     QueryCommand("outline", outline, outline_multi,
@@ -238,6 +238,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_search.add_argument(
         "--mode", choices=["lexical", "vector", "hybrid"], default="hybrid",
         help="Ranker. hybrid = RRF of FTS5 + embeddings (default).",
+    )
+    p_search.add_argument(
+        "--with-bodies", dest="with_bodies", action="store_true",
+        help=(
+            "Inline each hit's source body so audit-style 'list every X' "
+            "queries get all the source they need in one call. Pair with "
+            "a higher -k (e.g. -k 20)."
+        ),
     )
     p_search.add_argument("--root", default=".")
     _add_vendor_args(p_search)
