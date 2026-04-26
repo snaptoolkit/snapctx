@@ -31,6 +31,7 @@ def search_code(
     kind: Literal["function", "method", "class", "module", "interface", "type", "component", "constant"] | None = None,
     root: str | Path = ".",
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
+    scope: str | None = None,
 ) -> dict:
     """Find symbols whose qname, signature, docstring, or decorators match ``query``.
 
@@ -48,7 +49,7 @@ def search_code(
     ``enough`` when the docstring alone is self-explanatory).
     """
     root_path = Path(root).resolve()
-    idx = open_index(root_path)
+    idx = open_index(root_path, scope=scope)
     try:
         fts_query = build_fts_query(query)
         overfetch = k * 3
@@ -81,9 +82,12 @@ def search_code(
         d["next_action"] = suggest_next_action(row)
         results.append(d)
 
-    return {
+    response: dict = {
         "query": query,
         "mode": mode,
         "results": results,
         "hint": search_hint(results),
     }
+    if scope is not None:
+        response["scope"] = scope
+    return response

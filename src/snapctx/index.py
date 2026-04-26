@@ -81,13 +81,6 @@ CREATE TABLE IF NOT EXISTS symbol_vectors (
     vector  BLOB NOT NULL,
     FOREIGN KEY (qname) REFERENCES symbols(qname) ON DELETE CASCADE
 );
-
-CREATE TABLE IF NOT EXISTS indexed_vendor_packages (
-    name        TEXT PRIMARY KEY,
-    path        TEXT NOT NULL,
-    indexed_at  REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_vendor_path ON indexed_vendor_packages(path);
 """
 
 
@@ -95,9 +88,19 @@ def sha_bytes(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-def db_path_for(root: Path) -> Path:
-    """Resolve the standard SQLite path for a repo root."""
-    return (root / ".snapctx" / "index.db").resolve()
+def db_path_for(root: Path, scope: str | None = None) -> Path:
+    """Resolve the SQLite index path for a root.
+
+    ``scope=None`` (default) returns the repo's own index. A non-None
+    scope (a package directory name like ``"django"``) returns that
+    package's isolated index. Per-package isolation keeps vector
+    neighborhoods focused — a search for ``QuerySet`` inside the
+    django scope can't be polluted by the user's own filter classes,
+    and vice versa.
+    """
+    if scope is None:
+        return (root / ".snapctx" / "index.db").resolve()
+    return (root / ".snapctx" / "vendor" / scope / "index.db").resolve()
 
 
 class Index:
@@ -152,54 +155,8 @@ class Index:
             for tbl in (
                 "symbols_fts", "symbol_vectors",
                 "symbols", "calls", "imports", "files",
-                "indexed_vendor_packages",
             ):
                 self.conn.execute(f"DELETE FROM {tbl}")
-
-    # ---------- vendor-package tracking ----------
-
-    def is_vendor_indexed(self, name: str) -> bool:
-        return self.conn.execute(
-            "SELECT 1 FROM indexed_vendor_packages WHERE name = ?", (name,)
-        ).fetchone() is not None
-
-    def mark_vendor_indexed(self, name: str, path: str) -> None:
-        self.conn.execute(
-            "INSERT OR REPLACE INTO indexed_vendor_packages(name, path, indexed_at) "
-            "VALUES (?, ?, ?)",
-            (name, path, time.time()),
-        )
-
-    def vendor_packages(self) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            "SELECT name, path, indexed_at FROM indexed_vendor_packages "
-            "ORDER BY name ASC"
-        ).fetchall()
-
-    def vendor_paths(self) -> list[str]:
-        return [row["path"] for row in self.conn.execute(
-            "SELECT path FROM indexed_vendor_packages"
-        ).fetchall()]
-
-    def forget_vendor_package(self, name: str) -> int:
-        """Drop a vendor package's marker and all symbol/call/import rows
-        for files under it. Returns the number of files removed."""
-        row = self.conn.execute(
-            "SELECT path FROM indexed_vendor_packages WHERE name = ?", (name,)
-        ).fetchone()
-        if row is None:
-            return 0
-        path_prefix = row["path"].rstrip("/") + "/"
-        with self.tx():
-            files = [r["path"] for r in self.conn.execute(
-                "SELECT path FROM files WHERE path LIKE ? || '%'", (path_prefix,)
-            ).fetchall()]
-            for f in files:
-                self.forget_file(f)
-            self.conn.execute(
-                "DELETE FROM indexed_vendor_packages WHERE name = ?", (name,)
-            )
-        return len(files)
 
     # ---------- ingest ----------
 

@@ -18,7 +18,7 @@ from snapctx.api._common import (
 )
 
 
-def outline(path: str | Path, root: str | Path = ".") -> dict:
+def outline(path: str | Path, root: str | Path = ".", scope: str | None = None) -> dict:
     """List all symbols defined in a file, nested by parent.
 
     Accepts an absolute path or a path relative to ``root``. Returns the file's
@@ -31,10 +31,20 @@ def outline(path: str | Path, root: str | Path = ".") -> dict:
     root_path = Path(root).resolve()
     target = Path(path)
     if not target.is_absolute():
-        target = (root_path / target).resolve()
+        # In a vendor scope, relative paths are relative to the package's
+        # own root (the package dir), not the repo root, since that's how
+        # files are anchored in the per-package index.
+        from snapctx.vendor import vendor_index_dir
+        if scope is not None:
+            from snapctx.vendor import discover_packages
+            pkg = discover_packages(root_path).get(scope)
+            anchor = pkg or vendor_index_dir(root_path, scope).parent
+            target = (anchor / target).resolve()
+        else:
+            target = (root_path / target).resolve()
     file_str = str(target)
 
-    idx = open_index(root_path)
+    idx = open_index(root_path, scope=scope)
     try:
         rows = idx.symbols_in_file(file_str)
     finally:
@@ -77,6 +87,7 @@ def get_source(
     qname: str,
     with_neighbors: bool = False,
     root: str | Path = ".",
+    scope: str | None = None,
 ) -> dict:
     """Return the full source of a symbol, and optionally the signatures of what it calls.
 
@@ -85,7 +96,7 @@ def get_source(
     about the dependency context without a follow-up round-trip.
     """
     root_path = Path(root).resolve()
-    idx = open_index(root_path)
+    idx = open_index(root_path, scope=scope)
     try:
         row = idx.get_symbol(qname)
         if row is None:

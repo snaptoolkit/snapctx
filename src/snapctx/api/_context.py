@@ -48,6 +48,7 @@ def context(
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
     kind: str | None = None,
     root: str | Path = ".",
+    scope: str | None = None,
 ) -> dict:
     """Gather everything an agent needs about ``query`` in one call.
 
@@ -75,7 +76,7 @@ def context(
     """
     root_path = Path(root).resolve()
     seeds, candidates, mode = _seeds_for_query(
-        query, root_path, k_seeds, outline_discovery_k, kind, mode
+        query, root_path, k_seeds, outline_discovery_k, kind, mode, scope=scope,
     )
 
     if not seeds:
@@ -87,7 +88,7 @@ def context(
             "token_estimate": 0,
         }
 
-    idx = open_index(root_path)
+    idx = open_index(root_path, scope=scope)
     try:
         enriched = [
             _enrich_seed(
@@ -103,12 +104,14 @@ def context(
     finally:
         idx.close()
 
-    payload = {
+    payload: dict = {
         "query": query,
         "mode": mode,
         "seeds": enriched,
         "file_outlines": file_outlines,
     }
+    if scope is not None:
+        payload["scope"] = scope
     payload["token_estimate"] = rough_token_count(payload)
     payload["hint"] = (
         "This response bundles search + callees + callers + top sources + a file outline. "
@@ -124,6 +127,8 @@ def _seeds_for_query(
     outline_discovery_k: int,
     kind: str | None,
     mode: str,
+    *,
+    scope: str | None = None,
 ) -> tuple[list[dict], list[dict], str]:
     """Return ``(visible_seeds, broader_candidates, effective_mode)``.
 
@@ -132,7 +137,7 @@ def _seeds_for_query(
     the original mode.
     """
     if ":" in query:
-        idx_tmp = open_index(root_path)
+        idx_tmp = open_index(root_path, scope=scope)
         try:
             direct = idx_tmp.get_symbol(query)
         finally:
@@ -151,7 +156,8 @@ def _seeds_for_query(
             return [seed], [seed], "exact"
 
     search_result = search_code(
-        query, k=max(k_seeds, outline_discovery_k), kind=kind, root=root_path, mode=mode
+        query, k=max(k_seeds, outline_discovery_k), kind=kind,
+        root=root_path, mode=mode, scope=scope,
     )
     candidates = search_result["results"]
     return candidates[:k_seeds], candidates, mode

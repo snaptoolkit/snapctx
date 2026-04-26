@@ -58,14 +58,7 @@ def index_root(root: str | Path) -> dict:
         # away. Without this, stale symbols and call edges accumulate.
         walker_files = {str(f.resolve()) for f in iter_source_files(root_path, cfg.walker)}
         db_files = {row["path"] for row in idx.conn.execute("SELECT path FROM files").fetchall()}
-        # Files brought in by on-demand vendor indexing live outside the
-        # walker's view (they're under .venv / node_modules, gitignored).
-        # Without this guard, every regular re-index would forget them —
-        # and the next vendor query would have to ingest django from scratch.
-        vendor_prefixes = tuple(p.rstrip("/") + "/" for p in idx.vendor_paths())
         for stale in db_files - walker_files:
-            if vendor_prefixes and stale.startswith(vendor_prefixes):
-                continue
             idx.forget_file(stale)
             counts["removed"] += 1
 
@@ -126,40 +119,47 @@ def _wipe_if_root_moved(idx: Index, root_path: Path) -> bool:
     return False
 
 
-def index_subtree(project_root: str | Path, subtree: str | Path) -> dict:
-    """Ingest one subtree into the project's index without touching unrelated rows.
+def index_vendor_package(
+    repo_root: str | Path, name: str, pkg_path: str | Path
+) -> dict:
+    """Ingest one third-party package into its own dedicated index.
 
-    Used for on-demand vendor-package indexing: the caller has matched a
-    query token against an installed package and wants just *that* package
-    pulled into the existing index. Differs from ``index_root`` in two
-    ways: (1) walks only the subtree, and (2) skips the staleness diff
-    entirely — the rest of the project's files are still in the DB and
-    we must not forget them.
+    Storage: ``<repo_root>/.snapctx/vendor/<name>/index.db``. Completely
+    isolated from the repo's index — separate symbols, separate FTS, and
+    most importantly separate vector matrix so cosine search inside the
+    package isn't polluted by cross-namespace neighbors.
 
-    Parsers receive ``project_root`` for qname computation so symbols
-    indexed here share the same namespace as the rest of the project
-    (``.venv.lib.python3.14.site-packages.django.db.models.query:QuerySet``).
+    The parser is rooted at ``pkg_path`` (not ``repo_root``), so qnames
+    inside this index look like ``db.models.query:QuerySet`` — the
+    package's own module structure — instead of carrying a long
+    ``.venv.lib.python*.site-packages.django.…`` prefix.
     """
     from snapctx.config import WalkerConfig
     from snapctx.index import sha_bytes
     from snapctx.parsers.registry import parser_for
     from snapctx.walker import iter_source_files
 
-    project_root = Path(project_root).resolve()
-    subtree = Path(subtree).resolve()
-    idx = Index(db_path_for(project_root))
+    repo_root = Path(repo_root).resolve()
+    pkg_path = Path(pkg_path).resolve()
+    idx = Index(db_path_for(repo_root, scope=name))
     counts = {"updated": 0, "skipped": 0, "symbols": 0}
 
-    # Vendor-package code: don't honor gitignore (the venv is gitignored
-    # by definition), don't skip vendor dirs (we're inside one), keep the
-    # bundle filter (.min.js inside node_modules is still noise).
+    # Inside a venv / node_modules: gitignore would block us, vendor-skip
+    # would block us — disable both. Bundle filter stays on so a
+    # ``react/dist/react.min.js`` doesn't pollute the index.
     cfg = WalkerConfig(
         skip_vendor_packages=False,
         respect_gitignore=False,
     )
 
     try:
-        for file in iter_source_files(subtree, cfg):
+        # Same rename-detection trick as the repo index — if the package
+        # was reinstalled (uv / pip --upgrade), the absolute paths in our
+        # DB no longer resolve. Wipe and rebuild instead of dragging stale
+        # rows forward.
+        moved = _wipe_if_root_moved(idx, pkg_path)
+
+        for file in iter_source_files(pkg_path, cfg):
             file_str = str(file.resolve())
             data = file.read_bytes()
             sha = sha_bytes(data)
@@ -168,7 +168,7 @@ def index_subtree(project_root: str | Path, subtree: str | Path) -> dict:
                 continue
             parser = parser_for(file.suffix)
             assert parser is not None
-            result = parser.parse(file, project_root)
+            result = parser.parse(file, pkg_path)
             idx.ingest(file_str, parser.language, sha, result)
             counts["updated"] += 1
             counts["symbols"] += len(result.symbols)
@@ -180,12 +180,14 @@ def index_subtree(project_root: str | Path, subtree: str | Path) -> dict:
         idx.close()
 
     return {
-        "subtree": str(subtree),
+        "package": name,
+        "package_path": str(pkg_path),
         "files_updated": counts["updated"],
         "files_unchanged": counts["skipped"],
         "symbols_indexed": counts["symbols"],
         "calls_demoted": demoted,
         "symbols_embedded": embedded,
+        "package_moved": moved,
     }
 
 

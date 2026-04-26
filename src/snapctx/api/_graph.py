@@ -94,6 +94,7 @@ def expand(
     direction: Literal["callees", "callers", "both"] = "callees",
     depth: int = 1,
     root: str | Path = ".",
+    scope: str | None = None,
 ) -> dict:
     """Walk the call graph from ``qname`` and return neighbor signatures.
 
@@ -108,7 +109,7 @@ def expand(
     so the caller can decide which ones (if any) need `get_source`.
     """
     root_path = Path(root).resolve()
-    idx = open_index(root_path)
+    idx = open_index(root_path, scope=scope)
     try:
         root_sym = idx.get_symbol(qname)
         if root_sym is None:

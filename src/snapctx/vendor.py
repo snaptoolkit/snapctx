@@ -1,22 +1,28 @@
-"""Query-driven on-demand indexing of installed third-party packages.
+"""Per-package on-demand indexing of installed third-party packages.
 
-The user shouldn't have to remember to run ``snapctx index`` after switching
-to a question about Django internals. This module hooks into the query
-path: tokenize the user's query, match tokens against package directories
-discovered under the project root, and ingest just those packages on the
-fly. Indexed packages are tracked in ``indexed_vendor_packages`` so the
-second query for the same package is zero-cost.
+Each indexed package gets its own isolated SQLite database under
+``<root>/.snapctx/vendor/<name>/index.db``. Two reasons for the per-
+package isolation rather than merging into the repo's index:
 
-Discovery is intentionally narrow:
+1. **Vector neighborhood quality.** Cosine search over a single
+   coherent corpus (just Django source) returns much sharper matches
+   than over a mixed corpus (Django + the user's filter classes that
+   share vocabulary). The merged form noticeably degrades retrieval.
+2. **Cleaner qnames.** Inside the package's index we re-root the
+   parser at the package directory itself, so qnames look like
+   ``db.models.query:QuerySet`` — Django's actual module structure —
+   not ``.venv.lib.python3.14.site-packages.django.db.models.query:QuerySet``.
 
+Routing is explicit. The user prefixes a query with ``<pkg>: <rest>``
+(e.g. ``"django: queryset filter chain"``) and snapctx routes to that
+package's index. No prefix → repo only. There is no implicit auto-
+detection from arbitrary query tokens — that was the cause of the
+original cross-namespace noise.
+
+Discovery scans:
 - Python: ``<root>/{.venv,venv,env}/lib/python*/site-packages/<name>/``
-- Node:   ``<root>/node_modules/<name>/`` (top-level; scoped ``@x/y``
-  packages are intentionally out of scope for v1 — they're a small
-  fraction of usage and complicate query matching).
-
-We match query tokens against the *directory name* (which is also the
-import name in 99% of cases), not the distribution name from PyPI / npm.
-That avoids needing metadata and matches what the user types.
+- Node:   ``<root>/node_modules/<name>/`` (top-level; scoped @x/y out
+  of scope for v1)
 """
 
 from __future__ import annotations
@@ -31,13 +37,7 @@ _NODE_MODULES = "node_modules"
 
 
 def discover_packages(root: Path) -> dict[str, Path]:
-    """Return ``{name: absolute_path}`` for installed packages under ``root``.
-
-    First match wins on duplicates so a project's primary venv (``.venv``,
-    checked first) shadows any stale ``venv/`` left over from a previous
-    setup. Caller is expected to filter by query relevance — discovery is
-    cheap (one ``glob`` per known location).
-    """
+    """Return ``{name: absolute_path}`` for installed packages under ``root``."""
     found: dict[str, Path] = {}
     root = root.resolve()
 
@@ -73,85 +73,98 @@ def discover_packages(root: Path) -> dict[str, Path]:
     return found
 
 
-_TOKEN_SPLIT = re.compile(r"[^\w]+")
+_IDENTIFIER = re.compile(r"^[A-Za-z_][\w\-]*$")
 
 
-def query_tokens(query: str) -> set[str]:
-    """Lowercased, word-boundary-split tokens from a free-text query."""
-    return {t for t in _TOKEN_SPLIT.split(query.lower()) if t}
+def parse_query_prefix(query: str, root: Path) -> tuple[str | None, str]:
+    """Split ``"django: queryset filter"`` into ``("django", "queryset filter")``.
 
+    The prefix is recognized only when:
+    1. There's a single colon-separated head before the rest of the query,
+    2. the head is a single identifier (letters, digits, underscore, hyphen),
+       so we don't false-positive on dotted qnames like
+       ``django.db.models:QuerySet``,
+    3. the head matches a directory name discovered under ``root``'s
+       installed packages — *or* a directory under ``.snapctx/vendor/``
+       (already-indexed package, even if the source has since been
+       deleted).
 
-def match_packages(query: str, packages: dict[str, Path]) -> list[tuple[str, Path]]:
-    """Return ``(name, path)`` pairs for packages whose name appears as a
-    full token in the query. Case-insensitive, exact token match — no
-    fuzzy / substring hits, since "modeling" should not pull in ``model``.
+    Returns ``(None, original_query)`` when the prefix doesn't qualify so
+    the caller falls back to repo-only routing.
     """
-    tokens = query_tokens(query)
-    if not tokens:
+    if ":" not in query:
+        return None, query
+    head, rest = query.split(":", 1)
+    head_clean = head.strip()
+    if not _IDENTIFIER.match(head_clean):
+        return None, query
+    known = set(discover_packages(root)) | set(list_indexed_vendors(root))
+    if head_clean not in known:
+        # A name like ``foo:bar`` where ``foo`` isn't a package is
+        # almost certainly a qname and should pass through unchanged.
+        return None, query
+    return head_clean, rest.strip()
+
+
+def vendor_index_dir(root: Path, name: str) -> Path:
+    """``<root>/.snapctx/vendor/<name>/`` — the per-package storage dir."""
+    return (root / ".snapctx" / "vendor" / name).resolve()
+
+
+def list_indexed_vendors(root: Path) -> list[str]:
+    """Names of packages with an existing per-package index."""
+    base = root / ".snapctx" / "vendor"
+    if not base.is_dir():
         return []
-    return [(name, path) for name, path in packages.items() if name.lower() in tokens]
+    return sorted(
+        d.name for d in base.iterdir()
+        if d.is_dir() and (d / "index.db").exists()
+    )
 
 
-def ensure_packages_for_query(
-    root: Path,
-    query: str,
-    *,
-    explicit: list[str] | None = None,
-    enable_auto: bool = True,
-) -> list[dict]:
-    """Index any vendor packages referenced by the query that aren't yet indexed.
+def is_vendor_indexed(root: Path, name: str) -> bool:
+    return (vendor_index_dir(root, name) / "index.db").exists()
 
-    ``explicit`` is a user-provided list (CLI ``--pkg``) that bypasses the
-    token-match. Auto-detection runs only when ``enable_auto`` is True.
 
-    Returns one summary dict per *newly-indexed* package; already-indexed
-    packages are silently skipped (they're still queryable). Progress is
-    written to stderr so JSON callers stay clean.
+def ensure_vendor_indexed(
+    root: Path, name: str, *, force: bool = False
+) -> dict | None:
+    """Build (or refresh) the per-package index for ``name`` under ``root``.
+
+    Returns the indexer summary, or ``None`` when the package is unknown
+    (not installed under any discovered venv / node_modules) and we have
+    nothing to index. Existing indexes are skipped unless ``force=True``.
     """
-    from snapctx.api._indexer import index_subtree
-    from snapctx.index import Index, db_path_for
+    if not force and is_vendor_indexed(root, name):
+        return None
 
-    targets: list[tuple[str, Path]] = []
     packages = discover_packages(root)
-    if explicit:
-        for name in explicit:
-            if name in packages:
-                targets.append((name, packages[name]))
-            else:
-                sys.stderr.write(
-                    f"snapctx: --pkg {name} not found under {root} "
-                    f"(checked .venv/, venv/, env/, node_modules/)\n"
-                )
-    if enable_auto:
-        for pair in match_packages(query, packages):
-            if pair not in targets:
-                targets.append(pair)
-
-    if not targets:
-        return []
-
-    idx = Index(db_path_for(root))
-    try:
-        pending = [(n, p) for n, p in targets if not idx.is_vendor_indexed(n)]
-    finally:
-        idx.close()
-
-    summaries: list[dict] = []
-    for name, path in pending:
+    pkg_path = packages.get(name)
+    if pkg_path is None:
         sys.stderr.write(
-            f"snapctx: indexing vendor package {name} at {path} (one-time)...\n"
+            f"snapctx: package {name!r} not found under {root} "
+            f"(checked .venv/, venv/, env/, node_modules/)\n"
         )
-        summary = index_subtree(root, path)
-        summary["package"] = name
-        summaries.append(summary)
-        # Mark as indexed in a fresh connection (index_subtree closed its own).
-        idx = Index(db_path_for(root))
-        try:
-            idx.mark_vendor_indexed(name, str(path))
-        finally:
-            idx.close()
-        sys.stderr.write(
-            f"snapctx: vendor package {name} ready "
-            f"({summary['files_updated']} files, {summary['symbols_indexed']} symbols).\n"
-        )
-    return summaries
+        return None
+
+    sys.stderr.write(
+        f"snapctx: indexing vendor package {name} at {pkg_path} (one-time)...\n"
+    )
+    from snapctx.api._indexer import index_vendor_package
+    summary = index_vendor_package(root, name, pkg_path)
+    sys.stderr.write(
+        f"snapctx: vendor package {name} ready "
+        f"({summary['files_updated']} files, {summary['symbols_indexed']} symbols).\n"
+    )
+    return summary
+
+
+def forget_vendor(root: Path, name: str) -> bool:
+    """Delete a package's per-package index directory. Returns True if removed."""
+    import shutil
+
+    d = vendor_index_dir(root, name)
+    if not d.is_dir():
+        return False
+    shutil.rmtree(d)
+    return True

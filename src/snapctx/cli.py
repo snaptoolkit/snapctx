@@ -33,7 +33,13 @@ from snapctx.api import (
     search_code_multi,
 )
 from snapctx.roots import discover_roots, root_label
-from snapctx.vendor import discover_packages, ensure_packages_for_query
+from snapctx.vendor import (
+    discover_packages,
+    ensure_vendor_indexed,
+    forget_vendor,
+    list_indexed_vendors,
+    parse_query_prefix,
+)
 from snapctx.watch import run_watch
 
 
@@ -64,9 +70,19 @@ class QueryCommand:
 
     def call(self, args: argparse.Namespace, roots: list[Path], anchor: Path) -> dict:
         kwargs = {a: getattr(args, a) for a in self.arg_names}
+        scope = getattr(args, "scope", None)
         if len(roots) > 1:
+            if scope is not None:
+                # v1 simplification: vendor packages are per-root, and we
+                # don't have a meaningful "merge X across N vendor indexes"
+                # story yet. Surface the conflict explicitly.
+                raise SystemExit(
+                    f"snapctx: vendor scope ({scope!r}) is not supported across "
+                    f"multiple roots. Run from inside one of: "
+                    f"{', '.join(str(r) for r in roots)}"
+                )
             return self.multi(roots=roots, anchor=anchor, **kwargs)
-        return self.single(root=roots[0], **kwargs)
+        return self.single(root=roots[0], scope=scope, **kwargs)
 
 
 _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
@@ -184,26 +200,17 @@ def _refresh_indexes(roots: list[Path]) -> None:
 
 
 def _add_vendor_args(p: argparse.ArgumentParser) -> None:
-    """Attach the vendor-package flags shared by every query command.
+    """Attach the vendor-scope flag shared by every query command.
 
-    ``--pkg`` forces a specific package to be indexed (repeatable). It's
-    the escape hatch for cases where the package name doesn't appear
-    verbatim in the query but the user knows they need it (e.g. asking
-    about 'ORM' but wanting Django source).
-
-    ``--no-vendor-packages`` disables the auto-detection that scans the
-    free-text query for installed-package names. Useful when you want a
-    pure project-only result without the latency of a first-time vendor
-    ingest.
+    ``--pkg <name>`` is the explicit form of the ``<pkg>:`` query prefix:
+    route this query to the per-package index for ``<name>`` instead of
+    the repo's. Useful when the operation doesn't take a free-text query
+    (``outline``, ``source``, ``expand``) so the prefix-in-query trick
+    doesn't apply.
     """
     p.add_argument(
-        "--pkg", action="append", default=[], metavar="NAME",
-        help="Index this third-party package on demand (repeatable).",
-    )
-    p.add_argument(
-        "--no-vendor-packages", dest="auto_vendor",
-        action="store_false", default=True,
-        help="Don't auto-index packages whose name appears in the query.",
+        "--pkg", default=None, metavar="NAME",
+        help="Run against the named vendor package's index (e.g. --pkg django).",
     )
 
 
@@ -322,19 +329,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "vendor":
         return _vendor_dispatch(args)
 
-    # Query commands: discover, ensure index is fresh, dispatch.
+    # Query commands: discover, resolve scope, ensure relevant index is fresh, dispatch.
     roots, anchor = _resolve_roots(args.root)
     if not roots:
         roots = _bootstrap_first_index(anchor)
         if not roots:
             return 2
-    else:
-        # Incremental refresh — picks up edits since the last query so
-        # results always reflect current code. Cheap (SHA-skip) when
-        # nothing changed.
-        _refresh_indexes(roots)
 
-    _ensure_query_vendor_packages(roots, args)
+    # Scope resolution is cheap (~3 ms) so we run it BEFORE the repo
+    # auto-refresh: if the query is scoped to a vendor package, the repo's
+    # index isn't being queried and SHA-skipping its 300+ files is pure
+    # waste (~750 ms on a real project). Vendor packages are
+    # built-once-and-forget — no per-call refresh needed.
+    _resolve_query_scope(roots, args)
+    if args.scope is None:
+        _refresh_indexes(roots)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
@@ -345,29 +354,51 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _ensure_query_vendor_packages(roots: list[Path], args: argparse.Namespace) -> None:
-    """Index vendor packages referenced by this query, if any.
+def _resolve_query_scope(roots: list[Path], args: argparse.Namespace) -> None:
+    """Pick the right index for this query: repo's own, or one vendor package's.
 
-    Auto-detection only fires for commands that take a free-text ``query``
-    field (search, context); for qname-based commands (expand, source,
-    outline) the user can still pre-warm with explicit ``--pkg``. Run for
-    every root — multi-root projects might have separate venvs per
-    sub-project.
+    Two routing inputs:
+    - ``<pkg>: <rest>`` prefix in the free-text query field (``query`` for
+      search/context). The prefix is stripped from the query before
+      dispatch so the index sees just the actual question.
+    - ``--pkg <name>`` flag (``args.pkg``). Same effect, available on
+      every query command for cases without a free-text field.
+
+    With either input, the vendor package is built on demand (no-op when
+    already indexed). The resolved scope is attached as ``args.scope``
+    for ``QueryCommand.call`` to forward to the api function.
+
+    No prefix and no flag → ``args.scope`` stays ``None`` and the query
+    runs against the repo's own index.
     """
-    explicit = getattr(args, "pkg", None) or []
-    auto = getattr(args, "auto_vendor", True)
+    args.scope = None
+    explicit = getattr(args, "pkg", None)
     query_text = getattr(args, "query", None) or ""
-    if not explicit and (not auto or not query_text):
+    root = roots[0]  # vendor scope is single-root only (enforced at dispatch)
+
+    scope: str | None = None
+    if explicit:
+        scope = explicit
+    elif query_text:
+        prefix, stripped = parse_query_prefix(query_text, root)
+        if prefix is not None:
+            scope = prefix
+            args.query = stripped
+
+    if scope is None:
         return
-    for r in roots:
-        ensure_packages_for_query(
-            r, query_text, explicit=explicit, enable_auto=auto and bool(query_text),
-        )
+
+    if len(roots) > 1:
+        # Defer the multi-root check to dispatch time so the error path is
+        # consistent — but record the scope so QueryCommand.call surfaces it.
+        args.scope = scope
+        return
+
+    ensure_vendor_indexed(root, scope)
+    args.scope = scope
 
 
 def _vendor_dispatch(args: argparse.Namespace) -> int:
-    from snapctx.index import Index, db_path_for
-
     roots, _ = _resolve_roots(args.root)
     if not roots:
         sys.stderr.write(
@@ -375,15 +406,10 @@ def _vendor_dispatch(args: argparse.Namespace) -> int:
             f"Run a query or `snapctx index` first.\n"
         )
         return 2
-    # Vendor state is per-root; act on the closest one (single-root form).
     root = roots[0]
 
     if args.vendor_cmd == "list":
-        idx = Index(db_path_for(root))
-        try:
-            indexed = [dict(r) for r in idx.vendor_packages()]
-        finally:
-            idx.close()
+        indexed = list_indexed_vendors(root)
         available = sorted(discover_packages(root).keys())
         print(json.dumps(
             {"root": str(root), "indexed": indexed, "available": available},
@@ -392,16 +418,12 @@ def _vendor_dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.vendor_cmd == "forget":
-        idx = Index(db_path_for(root))
-        try:
-            removed = idx.forget_vendor_package(args.name)
-        finally:
-            idx.close()
+        ok = forget_vendor(root, args.name)
         print(json.dumps(
-            {"root": str(root), "package": args.name, "files_removed": removed},
+            {"root": str(root), "package": args.name, "removed": ok},
             indent=2,
         ))
-        return 0 if removed else 1
+        return 0 if ok else 1
 
     return 2
 
