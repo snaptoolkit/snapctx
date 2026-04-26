@@ -66,6 +66,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     po = sub.add_parser("outline")
     po.add_argument("path")
+    po.add_argument("--max-files", dest="max_files", type=int, default=50)
+    po.add_argument("--with-bodies", dest="with_bodies", action="store_true")
 
     pso = sub.add_parser("source")
     pso.add_argument("qname")
@@ -90,7 +92,9 @@ _OP_FOR = {
     "expand": ("expand", lambda a: {
         "qname": a.qname, "direction": a.direction, "depth": a.depth,
     }),
-    "outline": ("outline", lambda a: {"path": a.path}),
+    "outline": ("outline", lambda a: {
+        "path": a.path, "max_files": a.max_files, "with_bodies": a.with_bodies,
+    }),
     "source": ("source", lambda a: {
         "qname": a.qname, "with_neighbors": a.with_neighbors,
     }),

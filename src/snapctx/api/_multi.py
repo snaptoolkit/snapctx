@@ -279,6 +279,8 @@ def outline_multi(
     path: str | Path,
     roots: list[Path],
     *,
+    max_files: int = 50,
+    with_bodies: bool = False,
     anchor: Path | None = None,
 ) -> dict:
     """Route ``outline`` to the root whose dir is the longest prefix of ``path``.
@@ -297,14 +299,18 @@ def outline_multi(
 
     target = route_by_path(p, roots)
     if target is not None:
-        result = outline(p, root=target)
+        result = outline(
+            p, root=target, max_files=max_files, with_bodies=with_bodies,
+        )
         result["root"] = root_label(target, anchor)
         return result
 
     # Fall back: try each root, return the first that has matches.
     for r in roots:
-        result = outline(path, root=r)
-        if result.get("symbols"):
+        result = outline(
+            path, root=r, max_files=max_files, with_bodies=with_bodies,
+        )
+        if result.get("symbols") or result.get("files"):
             result["root"] = root_label(r, anchor)
             return result
 

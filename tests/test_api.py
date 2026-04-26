@@ -121,6 +121,78 @@ def test_search_also_dedupes_when_terms_overlap(tmp_path: Path) -> None:
     assert qnames.count("x:anthropic_openai_handler") == 1
 
 
+def test_outline_directory_returns_every_indexed_file(tmp_path: Path) -> None:
+    """``outline <dir>`` enumerates every indexed file under the directory.
+
+    This is the audit-by-enumeration path: when an agent needs to be
+    exhaustive (every middleware, every model, every command) and ranking
+    might miss long-tail symbols, directory-mode outline returns the
+    structural truth — every indexed file's tree, in one call.
+    """
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    (repo / "middleware").mkdir(parents=True)
+    (repo / "middleware" / "persist.py").write_text("def persist(): pass\n")
+    (repo / "middleware" / "devtools.py").write_text("def devtools(): pass\n")
+    (repo / "middleware" / "immer.py").write_text("def immer(): pass\n")
+    (repo / "app.py").write_text("def main(): pass\n")
+    index_root(repo)
+
+    out = outline(repo / "middleware", root=repo)
+    assert "files" in out
+    assert out["file_count"] == 3
+    file_basenames = {Path(f["file"]).name for f in out["files"]}
+    assert file_basenames == {"persist.py", "devtools.py", "immer.py"}
+
+
+def test_outline_directory_with_bodies_inlines_each_top_level(tmp_path: Path) -> None:
+    """``outline <dir> --with-bodies`` inlines every top-level symbol's
+    source body, so an audit of "every X in this folder" lands the
+    bodies it needs without N follow-up ``source`` calls."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    (repo / "middleware").mkdir(parents=True)
+    (repo / "middleware" / "persist.py").write_text(
+        "def persist():\n    return 'persisting'\n"
+    )
+    (repo / "middleware" / "devtools.py").write_text(
+        "def devtools():\n    return 'devtooling'\n"
+    )
+    index_root(repo)
+
+    out = outline(repo / "middleware", root=repo, with_bodies=True)
+    by_file = {Path(f["file"]).name: f for f in out["files"]}
+    persist_root = next(s for s in by_file["persist.py"]["symbols"]
+                        if s["qname"].endswith(":persist"))
+    assert "source" in persist_root
+    assert "persisting" in persist_root["source"]
+
+
+def test_outline_directory_truncates_at_max_files(tmp_path: Path) -> None:
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for i in range(5):
+        (repo / f"m{i}.py").write_text(f"def fn{i}(): pass\n")
+    index_root(repo)
+
+    out = outline(repo, root=repo, max_files=2)
+    assert out["file_count"] == 2
+    assert out.get("truncated") is True
+    assert out.get("total_files") == 5
+
+
+def test_outline_file_mode_unchanged(indexed_root: Path) -> None:
+    """File-mode outline keeps its existing response shape."""
+    out = outline("auth.py", root=indexed_root)
+    assert "file" in out
+    assert "symbols" in out
+    assert "files" not in out  # not directory mode
+
+
 def test_search_with_bodies_caps_long_bodies(indexed_root: Path) -> None:
     """Bodies are truncated past ``body_char_cap`` so a single audit
     call doesn't return arbitrarily large payloads."""

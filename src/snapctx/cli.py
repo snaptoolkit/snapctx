@@ -91,7 +91,7 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
     QueryCommand("expand", expand, expand_multi,
                  arg_names=("qname", "direction", "depth")),
     QueryCommand("outline", outline, outline_multi,
-                 arg_names=("path",)),
+                 arg_names=("path", "max_files", "with_bodies")),
     QueryCommand("source", get_source, get_source_multi,
                  arg_names=("qname", "with_neighbors")),
     QueryCommand("context", context, context_multi,
@@ -268,8 +268,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_expand.add_argument("--root", default=".")
     _add_vendor_args(p_expand)
 
-    p_outline = sub.add_parser("outline", help="Show the symbol tree of a file.")
+    p_outline = sub.add_parser(
+        "outline",
+        help="Show the symbol tree of a file or every indexed file in a directory.",
+    )
     p_outline.add_argument("path")
+    p_outline.add_argument(
+        "--max-files", dest="max_files", type=int, default=50,
+        help="Cap on number of files to outline in directory mode (default 50).",
+    )
+    p_outline.add_argument(
+        "--with-bodies", dest="with_bodies", action="store_true",
+        help=(
+            "Inline each top-level symbol's source body. Pairs with directory "
+            "mode for one-shot 'enumerate every X in this folder' audits."
+        ),
+    )
     p_outline.add_argument("--root", default=".")
     _add_vendor_args(p_outline)
 
