@@ -33,6 +33,7 @@ from snapctx.api import (
     search_code_multi,
 )
 from snapctx.roots import discover_roots, root_label
+from snapctx.vendor import discover_packages, ensure_packages_for_query
 from snapctx.watch import run_watch
 
 
@@ -182,6 +183,30 @@ def _refresh_indexes(roots: list[Path]) -> None:
 # ---------- argparse setup ----------
 
 
+def _add_vendor_args(p: argparse.ArgumentParser) -> None:
+    """Attach the vendor-package flags shared by every query command.
+
+    ``--pkg`` forces a specific package to be indexed (repeatable). It's
+    the escape hatch for cases where the package name doesn't appear
+    verbatim in the query but the user knows they need it (e.g. asking
+    about 'ORM' but wanting Django source).
+
+    ``--no-vendor-packages`` disables the auto-detection that scans the
+    free-text query for installed-package names. Useful when you want a
+    pure project-only result without the latency of a first-time vendor
+    ingest.
+    """
+    p.add_argument(
+        "--pkg", action="append", default=[], metavar="NAME",
+        help="Index this third-party package on demand (repeatable).",
+    )
+    p.add_argument(
+        "--no-vendor-packages", dest="auto_vendor",
+        action="store_false", default=True,
+        help="Don't auto-index packages whose name appears in the query.",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="snapctx", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -208,6 +233,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Ranker. hybrid = RRF of FTS5 + embeddings (default).",
     )
     p_search.add_argument("--root", default=".")
+    _add_vendor_args(p_search)
 
     p_expand = sub.add_parser("expand", help="Walk the call graph around a qname.")
     p_expand.add_argument("qname")
@@ -216,15 +242,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_expand.add_argument("--depth", type=int, default=1)
     p_expand.add_argument("--root", default=".")
+    _add_vendor_args(p_expand)
 
     p_outline = sub.add_parser("outline", help="Show the symbol tree of a file.")
     p_outline.add_argument("path")
     p_outline.add_argument("--root", default=".")
+    _add_vendor_args(p_outline)
 
     p_source = sub.add_parser("source", help="Show the source of a single symbol.")
     p_source.add_argument("qname")
     p_source.add_argument("--with-neighbors", action="store_true")
     p_source.add_argument("--root", default=".")
+    _add_vendor_args(p_source)
 
     p_context = sub.add_parser(
         "context",
@@ -244,6 +273,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_context.add_argument("--mode", choices=["lexical", "vector", "hybrid"], default="hybrid")
     p_context.add_argument("--kind", default=None)
     p_context.add_argument("--root", default=".")
+    _add_vendor_args(p_context)
+
+    p_vendor = sub.add_parser(
+        "vendor",
+        help="List or forget on-demand-indexed third-party packages.",
+    )
+    vendor_sub = p_vendor.add_subparsers(dest="vendor_cmd", required=True)
+    p_vendor_list = vendor_sub.add_parser(
+        "list", help="Show indexed vendor packages (and what's available to index)."
+    )
+    p_vendor_list.add_argument("--root", default=".")
+    p_vendor_forget = vendor_sub.add_parser(
+        "forget", help="Drop a vendor package's symbols from the index."
+    )
+    p_vendor_forget.add_argument("name")
+    p_vendor_forget.add_argument("--root", default=".")
 
     p_roots = sub.add_parser(
         "roots",
@@ -274,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "roots":
         return _print_roots(args.root)
 
+    if args.cmd == "vendor":
+        return _vendor_dispatch(args)
+
     # Query commands: discover, ensure index is fresh, dispatch.
     roots, anchor = _resolve_roots(args.root)
     if not roots:
@@ -286,6 +334,8 @@ def main(argv: list[str] | None = None) -> int:
         # nothing changed.
         _refresh_indexes(roots)
 
+    _ensure_query_vendor_packages(roots, args)
+
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
         parser.error(f"unknown command: {args.cmd}")
@@ -293,6 +343,67 @@ def main(argv: list[str] | None = None) -> int:
 
     print(json.dumps(cmd.call(args, roots, anchor), indent=2))
     return 0
+
+
+def _ensure_query_vendor_packages(roots: list[Path], args: argparse.Namespace) -> None:
+    """Index vendor packages referenced by this query, if any.
+
+    Auto-detection only fires for commands that take a free-text ``query``
+    field (search, context); for qname-based commands (expand, source,
+    outline) the user can still pre-warm with explicit ``--pkg``. Run for
+    every root — multi-root projects might have separate venvs per
+    sub-project.
+    """
+    explicit = getattr(args, "pkg", None) or []
+    auto = getattr(args, "auto_vendor", True)
+    query_text = getattr(args, "query", None) or ""
+    if not explicit and (not auto or not query_text):
+        return
+    for r in roots:
+        ensure_packages_for_query(
+            r, query_text, explicit=explicit, enable_auto=auto and bool(query_text),
+        )
+
+
+def _vendor_dispatch(args: argparse.Namespace) -> int:
+    from snapctx.index import Index, db_path_for
+
+    roots, _ = _resolve_roots(args.root)
+    if not roots:
+        sys.stderr.write(
+            f"snapctx: no .snapctx/index.db reachable from {args.root}. "
+            f"Run a query or `snapctx index` first.\n"
+        )
+        return 2
+    # Vendor state is per-root; act on the closest one (single-root form).
+    root = roots[0]
+
+    if args.vendor_cmd == "list":
+        idx = Index(db_path_for(root))
+        try:
+            indexed = [dict(r) for r in idx.vendor_packages()]
+        finally:
+            idx.close()
+        available = sorted(discover_packages(root).keys())
+        print(json.dumps(
+            {"root": str(root), "indexed": indexed, "available": available},
+            indent=2,
+        ))
+        return 0
+
+    if args.vendor_cmd == "forget":
+        idx = Index(db_path_for(root))
+        try:
+            removed = idx.forget_vendor_package(args.name)
+        finally:
+            idx.close()
+        print(json.dumps(
+            {"root": str(root), "package": args.name, "files_removed": removed},
+            indent=2,
+        ))
+        return 0 if removed else 1
+
+    return 2
 
 
 def _print_roots(start: str) -> int:

@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS symbol_vectors (
     vector  BLOB NOT NULL,
     FOREIGN KEY (qname) REFERENCES symbols(qname) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS indexed_vendor_packages (
+    name        TEXT PRIMARY KEY,
+    path        TEXT NOT NULL,
+    indexed_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vendor_path ON indexed_vendor_packages(path);
 """
 
 
@@ -101,6 +108,12 @@ class Index:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        # Manual transaction control. Python's default ``isolation_level=""``
+        # auto-begins a transaction on the first DML, which then collides
+        # with the explicit ``BEGIN`` issued by ``tx()`` ("cannot start a
+        # transaction within a transaction"). With ``None`` the only txn
+        # boundaries are the explicit BEGIN/COMMIT in ``tx()``.
+        self.conn.isolation_level = None
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
@@ -116,19 +129,77 @@ class Index:
 
     def forget_file(self, file: str) -> None:
         """Remove all rows for a file (symbols, calls, imports, FTS, vectors, files)."""
-        cur = self.conn.cursor()
-        cur.execute(
-            "DELETE FROM symbols_fts WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
-            (file,),
+        with self.tx():
+            cur = self.conn.cursor()
+            cur.execute(
+                "DELETE FROM symbols_fts WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
+                (file,),
+            )
+            cur.execute(
+                "DELETE FROM symbol_vectors WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
+                (file,),
+            )
+            cur.execute("DELETE FROM symbols WHERE file = ?", (file,))
+            cur.execute("DELETE FROM calls   WHERE file = ?", (file,))
+            cur.execute("DELETE FROM imports WHERE file = ?", (file,))
+            cur.execute("DELETE FROM files   WHERE path = ?", (file,))
+
+    def wipe_all(self) -> None:
+        """Drop every data row, keeping the schema. Used when the project
+        root has been renamed/moved and the stored absolute paths no longer
+        resolve — full rebuild is cheaper than path-rewriting."""
+        with self.tx():
+            for tbl in (
+                "symbols_fts", "symbol_vectors",
+                "symbols", "calls", "imports", "files",
+                "indexed_vendor_packages",
+            ):
+                self.conn.execute(f"DELETE FROM {tbl}")
+
+    # ---------- vendor-package tracking ----------
+
+    def is_vendor_indexed(self, name: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM indexed_vendor_packages WHERE name = ?", (name,)
+        ).fetchone() is not None
+
+    def mark_vendor_indexed(self, name: str, path: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO indexed_vendor_packages(name, path, indexed_at) "
+            "VALUES (?, ?, ?)",
+            (name, path, time.time()),
         )
-        cur.execute(
-            "DELETE FROM symbol_vectors WHERE qname IN (SELECT qname FROM symbols WHERE file = ?)",
-            (file,),
-        )
-        cur.execute("DELETE FROM symbols WHERE file = ?", (file,))
-        cur.execute("DELETE FROM calls   WHERE file = ?", (file,))
-        cur.execute("DELETE FROM imports WHERE file = ?", (file,))
-        cur.execute("DELETE FROM files   WHERE path = ?", (file,))
+
+    def vendor_packages(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT name, path, indexed_at FROM indexed_vendor_packages "
+            "ORDER BY name ASC"
+        ).fetchall()
+
+    def vendor_paths(self) -> list[str]:
+        return [row["path"] for row in self.conn.execute(
+            "SELECT path FROM indexed_vendor_packages"
+        ).fetchall()]
+
+    def forget_vendor_package(self, name: str) -> int:
+        """Drop a vendor package's marker and all symbol/call/import rows
+        for files under it. Returns the number of files removed."""
+        row = self.conn.execute(
+            "SELECT path FROM indexed_vendor_packages WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            return 0
+        path_prefix = row["path"].rstrip("/") + "/"
+        with self.tx():
+            files = [r["path"] for r in self.conn.execute(
+                "SELECT path FROM files WHERE path LIKE ? || '%'", (path_prefix,)
+            ).fetchall()]
+            for f in files:
+                self.forget_file(f)
+            self.conn.execute(
+                "DELETE FROM indexed_vendor_packages WHERE name = ?", (name,)
+            )
+        return len(files)
 
     # ---------- ingest ----------
 
@@ -266,10 +337,10 @@ class Index:
         rows = [
             (q, np.asarray(v, dtype=np.float32).tobytes()) for q, v in zip(qnames, vectors)
         ]
-        self.conn.executemany(
-            "INSERT OR REPLACE INTO symbol_vectors(qname, vector) VALUES (?, ?)", rows
-        )
-        self.conn.commit()
+        with self.tx():
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO symbol_vectors(qname, vector) VALUES (?, ?)", rows
+            )
 
     def vector_search(
         self, query_vec, limit: int, kind: str | None = None
@@ -378,18 +449,27 @@ class Index:
         (e.g. Mixin.method via MRO; Django-ORM chains like Model:objects.filter),
         and this sweep removes the ones that didn't pan out.
         """
-        cur = self.conn.execute(
-            "UPDATE calls SET callee_qname = NULL "
-            "WHERE callee_qname IS NOT NULL "
-            "  AND callee_qname NOT IN (SELECT qname FROM symbols)"
-        )
-        self.conn.commit()
-        return cur.rowcount
+        with self.tx():
+            cur = self.conn.execute(
+                "UPDATE calls SET callee_qname = NULL "
+                "WHERE callee_qname IS NOT NULL "
+                "  AND callee_qname NOT IN (SELECT qname FROM symbols)"
+            )
+            return cur.rowcount
 
     # ---------- transaction helper ----------
 
     @contextmanager
     def tx(self) -> Iterator[None]:
+        """Open a transaction, or join the caller's if one is already open.
+
+        Reentrancy lets composite ops (e.g. ``ingest`` calls ``forget_file``)
+        each wrap themselves in ``tx()`` for safety when called standalone,
+        without nesting ``BEGIN``/``COMMIT`` when called from another tx.
+        """
+        if self.conn.in_transaction:
+            yield
+            return
         try:
             self.conn.execute("BEGIN")
             yield

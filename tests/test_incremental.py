@@ -45,6 +45,52 @@ def test_edit_reparses_only_changed_file(tmp_path: Path) -> None:
     assert "b:beta" in b_syms and "b:delta" in b_syms
 
 
+def test_delete_and_add_in_same_pass_does_not_raise(tmp_path: Path) -> None:
+    """Regression: forgetting a stale file then ingesting a new one in the
+    same ``index_root`` pass used to raise ``OperationalError: cannot start
+    a transaction within a transaction`` because ``forget_file`` left an
+    auto-begun txn open and ``ingest`` then issued an explicit ``BEGIN``.
+    """
+    root = tmp_path / "repo"
+    _write_repo(root)
+    index_root(root)
+
+    # Delete one file (forces forget_file) AND add one (forces ingest)
+    # in the same incremental pass.
+    (root / "c.py").unlink()
+    (root / "d.py").write_text("def delta(): return 4\n")
+    summary = index_root(root)
+    assert summary["files_removed"] == 1
+    assert summary["files_updated"] == 1
+
+
+def test_root_rename_wipes_and_rebuilds(tmp_path: Path) -> None:
+    """Regression: moving the project on disk left every absolute path in
+    the index pointing at the old location. ``index_root`` now detects the
+    mismatch and wipes the index so the rebuild repopulates with current
+    paths."""
+    import shutil
+
+    original = tmp_path / "old-name"
+    _write_repo(original)
+    index_root(original)
+
+    # Simulate ``mv old-name new-name`` (incl. the ``.snapctx/`` dir).
+    moved = tmp_path / "new-name"
+    shutil.move(str(original), str(moved))
+
+    summary = index_root(moved)
+    assert summary["root_moved"] is True
+    # Wipe-then-rebuild: every file is "updated" (re-parsed), nothing is
+    # "removed" (the wipe happened before the staleness diff).
+    assert summary["files_updated"] == 3
+    assert summary["files_removed"] == 0
+
+    # Queries against the new location resolve to real files.
+    syms = outline("a.py", root=moved)["symbols"]
+    assert any(s["qname"] == "a:alpha" for s in syms)
+
+
 def test_deleted_file_is_removed_from_index(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     _write_repo(root)
