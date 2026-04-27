@@ -14,6 +14,7 @@ from pathlib import Path
 from snapctx.api._common import (
     docstring_summary,
     open_index,
+    resolve_qname,
     row_to_symbol_dict,
 )
 
@@ -232,13 +233,19 @@ def get_source(
     root_path = Path(root).resolve()
     idx = open_index(root_path, scope=scope)
     try:
-        row = idx.get_symbol(qname)
-        if row is None:
+        # Resolve the qname forgivingly: if the literal qname doesn't
+        # exist, try common LLM paraphrases (stale ``.tsx``/``.py`` on
+        # the module, dotted-vs-slashed path style). When a paraphrase
+        # matches we surface a hint so the caller learns the canonical
+        # form for next time.
+        canonical, paraphrase_hint = resolve_qname(idx, qname)
+        if canonical is None:
             return {
                 "qname": qname,
                 "error": "not_found",
                 "hint": f"No symbol {qname!r} in index.",
             }
+        row = idx.get_symbol(canonical)
 
         path = Path(row["file"])
         try:
@@ -249,12 +256,17 @@ def get_source(
         body = "\n".join(lines[row["line_start"] - 1 : row["line_end"]])
 
         result = {
-            "qname": qname,
+            "qname": canonical,
             "signature": row["signature"],
             "file": row["file"],
             "lines": f"{row['line_start']}-{row['line_end']}",
             "source": body,
         }
+        if paraphrase_hint is not None:
+            result["paraphrase_hint"] = (
+                f"Resolved {qname!r} → {canonical!r} ({paraphrase_hint}). "
+                f"Use {canonical!r} verbatim in subsequent calls."
+            )
 
         if with_neighbors:
             callees = []

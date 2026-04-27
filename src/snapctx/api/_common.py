@@ -73,3 +73,73 @@ def parse_line_range(lines: str) -> tuple[int, int]:
 def rough_token_count(payload: dict) -> int:
     """Approximate token count as chars/4 over the payload's JSON rendering."""
     return len(json.dumps(payload)) // 4
+
+
+# File extensions LLMs commonly leave on a qname's module portion when
+# paraphrasing — e.g. ``components/Verse.tsx:Verse`` instead of the
+# canonical ``components/Verse:Verse``. Stripped during qname resolution.
+_QNAME_PARAPHRASE_EXTS = (".tsx", ".ts", ".jsx", ".js", ".pyi", ".py")
+
+
+def resolve_qname(idx, qname: str) -> tuple[str | None, str | None]:
+    """Return ``(canonical_qname, paraphrase_hint)`` if ``qname`` (or a
+    plausible paraphrase of it) exists in the index, else ``(None, None)``.
+
+    The "paraphrase hint" is a short human-readable description of the
+    transformation we applied — None when ``qname`` was already canonical.
+    Used to teach the caller (often an LLM) the correct format next time.
+
+    Paraphrases handled:
+
+    * **Stale extension** — LLMs sometimes keep ``.tsx``/``.ts``/``.py``
+      on the module portion of a TS/Python qname. We strip those and retry.
+    * **Path-style swap** — LLMs trained on Python qnames sometimes apply
+      dotted-style to TS files (``components.Verse:Verse``); LLMs trained
+      on TS qnames sometimes apply slashed-style to Python files. We
+      try the opposite separator and retry.
+
+    Order: exact → strip-extension → swap-separators → strip-and-swap.
+    First hit wins. None of the retries are recursive; cost is O(4)
+    extra index lookups in the not-found path.
+    """
+    # 1. Exact match — fastest path.
+    if idx.get_symbol(qname) is not None:
+        return qname, None
+
+    if ":" not in qname:
+        return None, None
+    module, _, symbol = qname.partition(":")
+
+    candidates: list[tuple[str, str]] = []
+
+    # 2. Strip a stale extension from the module portion.
+    for ext in _QNAME_PARAPHRASE_EXTS:
+        if module.endswith(ext):
+            stripped = module[: -len(ext)]
+            candidates.append((f"{stripped}:{symbol}", f"stripped {ext!r} from module"))
+            break
+
+    # 3. Swap path separators in the module portion.
+    if "/" in module and "." not in module.split("/")[0]:
+        candidates.append(
+            (f"{module.replace('/', '.')}:{symbol}", "converted '/' → '.' in module")
+        )
+    if "." in module and "/" not in module:
+        candidates.append(
+            (f"{module.replace('.', '/')}:{symbol}", "converted '.' → '/' in module")
+        )
+
+    # 4. Combine: strip extension AND swap separators.
+    for cand, hint in list(candidates):
+        for ext in _QNAME_PARAPHRASE_EXTS:
+            cand_module = cand.partition(":")[0]
+            if cand_module.endswith(ext):
+                cand2 = f"{cand_module[: -len(ext)]}:{symbol}"
+                candidates.append((cand2, f"{hint} + stripped {ext!r}"))
+                break
+
+    for cand, hint in candidates:
+        if idx.get_symbol(cand) is not None:
+            return cand, hint
+
+    return None, None

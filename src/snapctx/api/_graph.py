@@ -22,6 +22,7 @@ from typing import Literal
 from snapctx.api._common import (
     docstring_summary,
     open_index,
+    resolve_qname,
     row_to_symbol_dict,
 )
 from snapctx.api._cross_package import CrossPackageResolver
@@ -113,13 +114,18 @@ def expand(
     idx = open_index(root_path, scope=scope)
     resolver = CrossPackageResolver(root_path, current_scope=scope)
     try:
-        root_sym = idx.get_symbol(qname)
-        if root_sym is None:
+        # Forgiving qname resolution — catches common LLM paraphrases
+        # like ``components/Verse.tsx:Verse`` (the canonical TS qname
+        # has no extension) or ``parser/utils:func`` (Python uses dots).
+        canonical, paraphrase_hint = resolve_qname(idx, qname)
+        if canonical is None:
             return {
                 "qname": qname,
                 "error": "not_found",
                 "hint": f"No symbol named {qname!r}. Call search_code first to find valid qnames.",
             }
+        qname = canonical
+        root_sym = idx.get_symbol(qname)
 
         visited: set[str] = {qname}
         layers: list[list[dict]] = []
@@ -155,7 +161,7 @@ def expand(
             if not frontier:
                 break
 
-        return {
+        result = {
             "qname": qname,
             "root_signature": root_sym["signature"],
             "direction": direction,
@@ -163,6 +169,12 @@ def expand(
             "layers": layers,
             "hint": _expand_hint(layers),
         }
+        if paraphrase_hint is not None:
+            result["paraphrase_hint"] = (
+                f"Resolved to {qname!r} ({paraphrase_hint}). "
+                f"Use this exact form in subsequent calls."
+            )
+        return result
     finally:
         resolver.close()
         idx.close()
