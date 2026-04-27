@@ -15,7 +15,8 @@ Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The pa
 ## Get started in 60 seconds
 
 ```bash
-# 1. Install (one time). Puts `snapctx` on your $PATH.
+# 1. Clone and install (one time). Puts `snapctx` on your $PATH.
+git clone https://github.com/snaptoolkit/snapctx.git
 cd snapctx
 uv tool install --editable .
 
