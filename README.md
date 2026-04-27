@@ -27,7 +27,7 @@ snapctx context "how does session authentication work"
 
 That's it. You get JSON back: top-5 matching symbols, their full source, who they call, who calls them, file outlines for the surrounding files. Usually enough to answer a non-trivial question in one call.
 
-Here's real output from running that query against the `requests` library (~370 ms cold CLI; under 10 ms warm via `snapctx watch` or the Python API):
+Here's real output from running that query against the `requests` library (~370 ms cold CLI; under 10 ms with `snapctx watch` running):
 
 ```jsonc
 {
