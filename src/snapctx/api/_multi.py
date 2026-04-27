@@ -335,6 +335,7 @@ def find_literal_multi(
     in_path: str | None = None,
     kind: str | None = None,
     with_bodies: bool = False,
+    with_callers: bool = False,
     body_char_cap: int = 1500,
     max_results: int = 500,
     anchor: Path | None = None,
@@ -354,8 +355,8 @@ def find_literal_multi(
     ok, errors = _fan_out(
         lambda r: find_literal(
             literal, root=r, in_path=in_path, kind=kind,
-            with_bodies=with_bodies, body_char_cap=body_char_cap,
-            max_results=max_results,
+            with_bodies=with_bodies, with_callers=with_callers,
+            body_char_cap=body_char_cap, max_results=max_results,
         ),
         roots, anchor=anchor,
     )

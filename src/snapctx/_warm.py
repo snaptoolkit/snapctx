@@ -78,6 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--in", dest="in_path", default=None)
     pf.add_argument("--kind", default=None)
     pf.add_argument("--with-bodies", dest="with_bodies", action="store_true")
+    pf.add_argument("--with-callers", dest="with_callers", action="store_true")
     pf.add_argument("--max-results", dest="max_results", type=int, default=500)
 
     return p
@@ -107,7 +108,8 @@ _OP_FOR = {
     }),
     "find": ("find", lambda a: {
         "literal": a.literal, "in_path": a.in_path, "kind": a.kind,
-        "with_bodies": a.with_bodies, "max_results": a.max_results,
+        "with_bodies": a.with_bodies, "with_callers": a.with_callers,
+        "max_results": a.max_results,
     }),
 }
 

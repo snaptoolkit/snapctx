@@ -105,7 +105,7 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
     QueryCommand("find", find_literal, find_literal_multi,
                  arg_names=(
                      "literal", "in_path", "kind",
-                     "with_bodies", "max_results",
+                     "with_bodies", "with_callers", "max_results",
                  )),
 )
 _QUERY_BY_NAME: dict[str, QueryCommand] = {c.name: c for c in _QUERY_COMMANDS}
@@ -333,6 +333,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_find.add_argument(
         "--with-bodies", dest="with_bodies", action="store_true",
         help="Inline each match's enclosing-symbol source body.",
+    )
+    p_find.add_argument(
+        "--with-callers", dest="with_callers", action="store_true",
+        help="Attach depth-1 callers (deduped) to each match.",
     )
     p_find.add_argument(
         "--max-results", dest="max_results", type=int, default=500,

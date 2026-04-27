@@ -143,6 +143,43 @@ def test_find_max_results_truncates(tmp_path: Path) -> None:
     assert out["truncated"] is True
 
 
+def test_find_with_callers_attaches_deduped_callers(tmp_path: Path) -> None:
+    """The audit-with-impact case: each hit lists the distinct callers that
+    invoke it, so "every X site AND who triggers them" is one call.
+    """
+    repo = tmp_path / "repo"
+    # callee contains the literal; callers do not (so they don't show up
+    # as direct find hits, only attached to the callee).
+    _write(repo, "svc.py", (
+        "def writer():\n"
+        "    transaction.atomic()\n"
+        "\n"
+        "def first(): writer()\n"
+        "def second(): writer()\n"
+        "def first_again(): writer()\n"  # second call from `first` should dedupe
+    ))
+    index_root(repo)
+
+    out = find_literal("transaction.atomic", root=repo, with_callers=True)
+    assert out["match_count"] == 1
+    callers = out["matches"][0]["callers"]
+    assert callers is not None
+    caller_qnames = {c["qname"] for c in callers}
+    assert caller_qnames == {"svc:first", "svc:second", "svc:first_again"}
+    # Each entry has a representative line.
+    assert all("line" in c for c in callers)
+
+
+def test_find_with_callers_no_callers_omits_field(tmp_path: Path) -> None:
+    """A symbol with zero callers shouldn't get an empty `callers` field."""
+    repo = tmp_path / "repo"
+    _write(repo, "svc.py", "def writer():\n    transaction.atomic()\n")
+    index_root(repo)
+
+    out = find_literal("transaction.atomic", root=repo, with_callers=True)
+    assert "callers" not in out["matches"][0]
+
+
 def test_find_via_cli_command(tmp_path: Path) -> None:
     """End-to-end CLI invocation through the QueryCommand registry."""
     import subprocess

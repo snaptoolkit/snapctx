@@ -42,6 +42,7 @@ def find_literal(
     in_path: str | None = None,
     kind: str | None = None,
     with_bodies: bool = False,
+    with_callers: bool = False,
     body_char_cap: int = 1500,
     max_results: int = 500,
 ) -> dict:
@@ -52,7 +53,10 @@ def find_literal(
     src/auth/" without scanning the rest of the repo. ``kind`` filters
     by symbol kind (function, method, class, …) the same way ``search``
     does. ``with_bodies`` inlines each match's source body capped at
-    ``body_char_cap`` chars per match.
+    ``body_char_cap`` chars per match. ``with_callers`` attaches the
+    depth-1 caller list (deduped by qname) to each hit so audits that
+    need impact analysis ("every X site AND who triggers them") fit
+    in one call.
 
     Returns ``{literal, matches, match_count, truncated, hint}``. The
     match list is in source order (by file, then line_start) so an
@@ -75,6 +79,8 @@ def find_literal(
             rows, literal, with_bodies=with_bodies,
             body_char_cap=body_char_cap, max_results=max_results,
         )
+        if with_callers:
+            _attach_callers(idx, matches)
     finally:
         idx.close()
 
@@ -84,8 +90,30 @@ def find_literal(
         "matches": matches,
         "match_count": len(matches),
         "truncated": truncated,
-        "hint": _hint_for(matches, truncated, max_results, with_bodies),
+        "hint": _hint_for(
+            matches, truncated, max_results, with_bodies,
+            with_callers=with_callers,
+        ),
     }
+
+
+def _attach_callers(idx, matches: list[dict]) -> None:
+    """Attach a deduped depth-1 caller list to each match in-place.
+
+    A symbol called from N sites has N rows in the calls table; we want the
+    distinct caller qnames (with the first call line as the example), since
+    "who calls this" usually wants the unique callers list, not every line.
+    """
+    for m in matches:
+        seen: dict[str, int] = {}
+        for c in idx.callers_of(m["qname"]):
+            cq = c["caller_qname"]
+            if cq and cq not in seen:
+                seen[cq] = c["line"]
+        if seen:
+            m["callers"] = [
+                {"qname": cq, "line": line} for cq, line in seen.items()
+            ]
 
 
 def _candidate_rows(
@@ -198,6 +226,7 @@ def _innermost(rows: list[sqlite3.Row], line_no: int) -> sqlite3.Row | None:
 
 def _hint_for(
     matches: list[dict], truncated: bool, max_results: int, with_bodies: bool,
+    *, with_callers: bool = False,
 ) -> str:
     if not matches:
         return (
@@ -211,8 +240,14 @@ def _hint_for(
             "to narrow, or --max-results N to widen."
         )
     if not with_bodies:
+        extras = "" if with_callers else (
+            " Add --with-callers for impact analysis "
+            "(who triggers each site)."
+        )
         return (
             f"{len(matches)} sites found. Add --with-bodies to inline each "
             "enclosing symbol's source so you don't need follow-up calls."
+            + extras
         )
-    return f"{len(matches)} sites found, bodies inlined."
+    suffix = " Callers attached." if with_callers else ""
+    return f"{len(matches)} sites found, bodies inlined.{suffix}"
