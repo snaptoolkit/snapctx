@@ -6,7 +6,7 @@
 
 *snapctx = **snap** **c**on**t**e**x**t — a snapshot of the context an agent needs.*
 
-**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **6× fewer tool calls. 8× faster. 2× fewer tokens on survey queries. Up to 16× fewer calls in realistic agent usage.** Measured against minimum-grep on this codebase — [see the full numbers](#benchmark-greptread-vs-snapctx-tool-output-only-no-agent-reasoning).
+**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **6× fewer tool calls. 8× faster. 2× fewer tokens on survey queries. Up to 16× fewer calls in realistic agent usage.** Measured against minimum-grep on this codebase — [see the full numbers](#tool-benchmark).
 
 Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The parser layer is pluggable — adding a language is a single new file.
 
@@ -91,7 +91,7 @@ Here's real output from running that query against the `requests` library (~370 
 
 ---
 
-## Benchmark: grep+read vs snapctx (tool output only, no agent reasoning)
+## Tool benchmark: grep+read vs snapctx
 
 Controlled minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watch`). Tokens estimated at 4 chars/token from actual bytes returned by tools — no agent reasoning included.
 
