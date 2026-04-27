@@ -208,16 +208,52 @@ def suggest_next_action(row: sqlite3.Row) -> str:
     return "read_body"
 
 
-def search_hint(results: list[dict]) -> str:
+_AUDIT_PHRASE_RE = re.compile(
+    r"\b(list every|every place|every call|every use|audit|find all|"
+    r"all the|where (?:are|is|do)|enumerate)\b",
+    re.IGNORECASE,
+)
+
+
+def search_hint(
+    results: list[dict],
+    *,
+    query: str = "",
+    with_bodies: bool = False,
+    also_used: bool = False,
+) -> str:
+    """One-line hint nudging the agent toward the next-best operation.
+
+    The ranker emits these as part of every search response. Beyond the
+    classic "next_action on the top hit" cue, we also nudge toward the
+    audit-class flags (``--with-bodies``, ``--also``) when the query
+    phrasing looks like an audit and those flags weren't used. Saves
+    the agent from having to remember the full toolset.
+    """
     if not results:
         return (
             "No matches. Try synonyms (e.g. 'throttle' instead of 'rate limit'), "
             "or a different `kind` filter."
         )
+
+    looks_like_audit = bool(_AUDIT_PHRASE_RE.search(query)) if query else False
+    if looks_like_audit and not with_bodies:
+        return (
+            "Audit-class query detected. Add --with-bodies to inline each "
+            "hit's source AND pre-resolve referenced constants in one call "
+            "(no follow-up `source` needed)."
+            + (" Use --also TERM to batch additional keywords." if not also_used else "")
+        )
+
     top = results[0]
     qname = top["qname"]
     if top["next_action"] == "expand":
         return f"To see callees of the top result, call expand({qname!r})."
     if top["next_action"] == "outline":
         return f"To see {qname}'s members, call outline with its file."
+    if not with_bodies and any(r.get("next_action") == "read_body" for r in results[:3]):
+        return (
+            "Several top results suggest reading bodies. Re-run with "
+            "--with-bodies to inline source for all hits in one call."
+        )
     return f"If the signature isn't enough, call get_source({qname!r})."

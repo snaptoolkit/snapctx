@@ -107,7 +107,9 @@ def search_code(
         "query": query,
         "mode": mode,
         "results": results,
-        "hint": search_hint(results),
+        "hint": search_hint(
+            results, query=query, with_bodies=with_bodies, also_used=bool(also),
+        ),
     }
     if also:
         response["also"] = list(also)

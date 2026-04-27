@@ -85,7 +85,16 @@ def outline(
         rows, by_qname,
         with_bodies=with_bodies, body_char_cap=body_char_cap,
     )
-    return {"file": file_str, "symbols": tree}
+    response: dict = {"file": file_str, "symbols": tree}
+    # Nudge toward the one-call shape when the file is small enough that
+    # bodies fit comfortably in one response. Saves the agent from doing
+    # outline-then-N-source for files with a handful of symbols.
+    if not with_bodies and 0 < len(tree) <= 10:
+        response["hint"] = (
+            f"Add --with-bodies to get all {len(tree)} top-level "
+            "symbols' source in one call (no follow-up `source` needed)."
+        )
+    return response
 
 
 def _outline_directory(
@@ -142,6 +151,14 @@ def _outline_directory(
         response["hint"] = (
             f"No indexed files under {dir_path}. Did you run `snapctx index` "
             f"on this root, and is the directory under it?"
+        )
+    elif not with_bodies and "hint" not in response:
+        # Directory enumeration's killer feature is one-call exhaustive
+        # audit; surface --with-bodies as the natural next step.
+        response["hint"] = (
+            f"Got {len(outlines)} files' symbol trees. Add --with-bodies "
+            "to inline each top-level symbol's source — "
+            "one call answers a 'list every X in this folder' audit."
         )
     return response
 

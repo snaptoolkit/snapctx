@@ -136,7 +136,9 @@ def search_code_multi(
         "mode": mode,
         "roots": _root_labels(roots, anchor),
         "results": top,
-        "hint": search_hint(top),
+        "hint": search_hint(
+            top, query=query, with_bodies=with_bodies, also_used=bool(also),
+        ),
     }
     if errors:
         payload["root_errors"] = errors
