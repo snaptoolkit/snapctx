@@ -6,7 +6,7 @@
 
 *snapctx = **snap** **c**on**t**e**x**t — a snapshot of the context an agent needs.*
 
-**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **1 tool call vs 11–50, 100% coverage on exhaustive audits** — measured on real codebases ([see the numbers](#why-bother-the-numbers)).
+**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **1 tool call vs 11–50, fewer tokens, 100% coverage on exhaustive audits** — measured on real codebases ([see the numbers](#why-bother-the-numbers)).
 
 Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The parser layer is pluggable — adding a language is a single new file.
 
@@ -76,7 +76,7 @@ snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Curso
 ```markdown
 ## Code exploration with snapctx
 
-For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It's faster (1 tool call vs 11–50), more accurate, and guarantees 100% coverage on exhaustive audits where `Grep` + `Read` chains miss the long tail.
+For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It uses fewer tokens, fewer tool calls (1 vs 11–50), and guarantees 100% coverage on exhaustive audits where `Grep` + `Read` chains miss the long tail.
 
 **Why it works**: snapctx parses the codebase into a symbol graph (functions, classes, components, constants, calls, imports), runs hybrid lexical+semantic search, and returns top symbols with source bodies, a depth-2 call-path trace (callees-of-callees + callers-of-callers), constant-alias resolution, and file outlines — usually enough to answer in one call.
 
