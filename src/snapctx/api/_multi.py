@@ -27,6 +27,7 @@ from typing import Any, Callable, Literal
 from snapctx.api._context import context
 from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
+from snapctx.api._map import map_repo
 from snapctx.api._ranking import search_hint
 from snapctx.api._retrieve import get_source, outline
 from snapctx.api._search import search_code
@@ -326,6 +327,61 @@ def outline_multi(
         ),
         "roots_tried": _root_labels(roots, anchor),
     }
+
+
+def map_repo_multi(
+    roots: list[Path],
+    *,
+    depth: int = 1,
+    prefix: str | None = None,
+    anchor: Path | None = None,
+) -> dict:
+    """Run ``map_repo`` on each root and return one section per root.
+
+    Maps don't merge sensibly across roots (different module trees, no
+    shared score), so multi-root output is structural: each root keeps
+    its own ``directories`` block, tagged with a ``root`` label.
+    """
+    from snapctx.api._common import rough_token_count
+    from snapctx.roots import root_label
+
+    if not roots:
+        return {
+            "depth": depth, "roots": [], "file_count": 0, "symbol_count": 0,
+            "hint": "No indexed roots.",
+        }
+
+    ok, errors = _fan_out(
+        lambda r: map_repo(root=r, depth=depth, prefix=prefix),
+        roots, anchor=anchor,
+    )
+
+    per_root: list[dict] = []
+    total_files = 0
+    total_symbols = 0
+    for r, res in ok:
+        label = root_label(r, anchor)
+        per_root.append({
+            "root": label,
+            "directories": res.get("directories", []),
+            "file_count": res.get("file_count", 0),
+            "symbol_count": res.get("symbol_count", 0),
+        })
+        total_files += res.get("file_count", 0)
+        total_symbols += res.get("symbol_count", 0)
+
+    payload: dict = {
+        "depth": depth,
+        "roots": per_root,
+        "file_count": total_files,
+        "symbol_count": total_symbols,
+    }
+    if prefix:
+        payload["prefix"] = prefix
+    if errors:
+        payload["root_errors"] = errors
+    payload["token_estimate"] = rough_token_count(payload)
+    return payload
 
 
 def find_literal_multi(

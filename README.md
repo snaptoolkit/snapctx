@@ -114,6 +114,7 @@ You'll mostly use **`context`**. The others let you drill in when `context` isn'
 | `snapctx context "query"` | Everything-in-one-call: search + callees + callers + source + outlines. **Audit-aware**: when the query is an unambiguous audit phrasing (e.g. "audit every `transaction.atomic` site"), also runs `find` on the literal and attaches an exhaustive `find_results` block. | First move for any question. ~3–10 k tokens back. |
 | `snapctx search "query"` | Top-K ranked symbols with signatures. Add `--with-bodies` to inline source. Add `--also <term2> [...]` to batch related terms in one call. | Ranked discovery; `--with-bodies` for one-shot audits when ≤ K hits. |
 | `snapctx find "<literal>"` | **Exhaustive** literal-substring enumeration over every indexed symbol body. Returns ALL matches (not ranked, not capped). Add `--with-bodies` to inline containing-symbol source; add `--with-callers` to attach depth-1 callers (deduped) to every hit. | "Every place that uses X" audits — matches grep coverage with structured output. `--with-callers` turns it into "every site AND who triggers them" in one call. |
+| `snapctx map [--prefix PATH] [--depth 1\|2]` | Repo-wide table of contents — every indexed file's top-level symbols (signature, 1-line docstring, decorators), grouped by directory. No query needed. `--depth 2` also pulls in direct children (class methods). `--prefix` scopes to a sub-tree (e.g. `src/`). | Orientation when you don't yet have a specific question — fresh repo, unfamiliar area. Pairs with `search` for the actual lookup once you've oriented. ~6–30 k tokens depending on scope. |
 | `snapctx outline path/` | Symbol tree of a file or directory (functions / classes / constants, nested). Add `--with-bodies` to inline source for every symbol. | Cheaper than reading whole files; directory mode gives you a module map. |
 | `snapctx source <qname>` | Full body of a single symbol. Add `--with-neighbors` for resolved callee signatures. | When you have an exact qname and want its source. |
 | `snapctx expand <qname>` | Walk the call graph. `--direction callees \| callers \| both`, `--depth 1 \| 2`. | "Who calls this?" / "What does this depend on?" |
@@ -165,6 +166,7 @@ Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outline
 
 - `snapctx search "<query>"` — top-K ranked symbols. Add `--with-bodies` to inline source; add `--also <term2> [...]` to batch related terms.
 - `snapctx find "<literal>" --with-bodies` — **exhaustive** substring enumeration across all indexed bodies. Use this for "every place that uses X" audits where ranked search would cap the long tail. Add `--with-callers` to also attach the deduped depth-1 caller list to each hit (audit + impact analysis in one call).
+- `snapctx map --prefix src/` — query-free *orientation* call. Returns the whole code tree (every file's top-level symbols + signatures + 1-line docstrings + decorators, grouped by directory) so you can build a mental model before you have a specific question. `--depth 2` adds class methods. Use this when landing in an unfamiliar repo or area; for actual lookups, follow with `search` or `context`.
 - `snapctx expand <qname> --direction callees|callers|both --depth 1|2` — call-graph neighborhood.
 - `snapctx outline <path>` — symbol tree of a single file or directory; add `--with-bodies` to inline every symbol's source.
 - `snapctx source <qname> --with-neighbors` — full body + resolved callee signatures.
@@ -388,6 +390,7 @@ All operations read from the same SQLite file. They're cheap and composable; `co
 - **`find_literal(literal, kind?, in_path?, with_bodies?, with_callers?)`** — exhaustive literal-substring scan over indexed symbol bodies. Returns every match (file, qname, match_line, match_text), innermost-symbol deduped so a method beats its enclosing class. Complement to `search_code` when the question is "every place that uses X" rather than "the most relevant place". `with_callers=True` attaches the deduped depth-1 caller list to each hit so audit + impact analysis fits in one call.
 - **`expand(qname, direction, depth)`** — walk the call graph. Returns signatures + docstring summaries of neighbors, no bodies.
 - **`outline(path, with_bodies?)`** — file or directory symbol tree, nested by containment; `with_bodies=True` inlines source for every symbol.
+- **`map_repo(prefix?, depth?)`** — repo-wide table of contents. Returns every indexed file's top-level symbols (qname, signature, 1-line docstring, line range, decorators), grouped by directory, with each file's module docstring hoisted to a file-level `summary`. `depth=2` adds direct children (class methods, nested functions). `prefix` scopes to a sub-tree. Query-free orientation tool — complement to `context`/`search`, not a replacement.
 - **`get_source(qname, with_neighbors)`** — full source of a single symbol; `with_neighbors=True` appends signatures of resolved callees.
 - **`context(query, …)`** — the one-shot. Runs `search_code` (or fast-paths to a direct qname match when the query contains `:` and matches a known qname). For each of the top `k_seeds=5` hits:
   - Signature, docstring, file, line range, decorators, score.
@@ -451,7 +454,7 @@ The three levers we tuned (85 s → 10 s on the same repo): walker-level vendor-
 Everything the CLI exposes is also a Python function. Import from `snapctx.api`:
 
 ```python
-from snapctx.api import context, search_code, find_literal, expand, outline, get_source, index_root
+from snapctx.api import context, search_code, find_literal, expand, outline, map_repo, get_source, index_root
 
 # Build or refresh the index.
 index_root("/path/to/repo")

@@ -29,6 +29,8 @@ from snapctx.api import (
     get_source,
     get_source_multi,
     index_root,
+    map_repo,
+    map_repo_multi,
     outline,
     outline_multi,
     search_code,
@@ -107,6 +109,8 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
                      "literal", "in_path", "kind",
                      "with_bodies", "with_callers", "max_results",
                  )),
+    QueryCommand("map", map_repo, map_repo_multi,
+                 arg_names=("depth", "prefix")),
 )
 _QUERY_BY_NAME: dict[str, QueryCommand] = {c.name: c for c in _QUERY_COMMANDS}
 
@@ -343,6 +347,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_find.add_argument("--root", default=".")
     _add_vendor_args(p_find)
+
+    p_map = sub.add_parser(
+        "map",
+        help=(
+            "Repo-wide table of contents — every indexed file's top-level "
+            "symbols, grouped by directory."
+        ),
+    )
+    p_map.add_argument(
+        "--depth", type=int, default=1, choices=(1, 2),
+        help=(
+            "1 (default) = top-level symbols only. 2 = also include direct "
+            "children (class methods, nested functions)."
+        ),
+    )
+    p_map.add_argument(
+        "--prefix", default=None, metavar="PATH",
+        help="Restrict the map to files under <root>/<prefix> (e.g. src/).",
+    )
+    p_map.add_argument("--root", default=".")
+    _add_vendor_args(p_map)
 
     p_vendor = sub.add_parser(
         "vendor",
