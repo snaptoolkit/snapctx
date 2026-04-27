@@ -215,6 +215,54 @@ _AUDIT_PHRASE_RE = re.compile(
 )
 
 
+# Words that audit-style queries pad around the actual identifier we want
+# to find. Stripping these keeps the literal extractor from latching onto
+# generic English when the query is "every transaction.atomic *site*".
+_AUDIT_FILLERS = frozenset({
+    "site", "sites", "usage", "usages", "use", "uses", "used",
+    "place", "places", "call", "calls", "called", "caller", "callers",
+    "occurrence", "occurrences", "instance", "instances",
+    "code", "codebase", "repo", "project", "module", "modules",
+    "function", "functions", "method", "methods", "class", "classes",
+    "model", "models", "field", "fields",
+})
+
+
+def extract_audit_literal(query: str) -> str | None:
+    """If the query is an audit phrasing wrapping a single identifier, return it.
+
+    Used by ``context()`` to decide whether to run ``find`` alongside the
+    ranked search. Conservative on purpose: returns ``None`` whenever the
+    extracted candidate is ambiguous so the agent isn't surprised by a
+    misfired exhaustive scan.
+
+    Heuristic: strip the audit phrase itself, then look for identifier-
+    shaped tokens (camelCase, snake_case, dotted, CONSTANT_CASE) in the
+    remainder. A single dotted token wins outright (``transaction.atomic``
+    is unambiguous). Otherwise a single non-filler identifier wins.
+    Multiple plausible candidates → ``None``.
+    """
+    if not query or not _AUDIT_PHRASE_RE.search(query):
+        return None
+    cleaned = _AUDIT_PHRASE_RE.sub(" ", query)
+    tokens = [t.strip(".,;:!?\"'`()[]{}") for t in cleaned.split()]
+    tokens = [t for t in tokens if t]
+
+    dotted = [t for t in tokens if "." in t and looks_like_identifier(t)]
+    if len(dotted) == 1:
+        return dotted[0]
+    if len(dotted) > 1:
+        return None
+
+    others = [
+        t for t in tokens
+        if looks_like_identifier(t) and t.lower() not in _AUDIT_FILLERS
+    ]
+    if len(others) == 1:
+        return others[0]
+    return None
+
+
 def search_hint(
     results: list[dict],
     *,
