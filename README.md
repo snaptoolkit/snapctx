@@ -131,6 +131,7 @@ Add `--kind function|method|class|component|constant|interface|type` to any of t
 ## What just works (no setup)
 
 - **Auto-indexing on first query.** Run `snapctx context …` in a fresh repo and it builds the index transparently before answering.
+- **Forgiving qnames.** `source` and `expand` tolerate common LLM paraphrases — keep `.tsx`/`.py` on the module (`components/Verse.tsx:Verse`), apply Python dotted style to a TS file (`components.Verse:Verse`), or vice versa — and the call still resolves. The response includes a `paraphrase_hint` field naming the canonical form so the caller learns it for next time.
 - **Auto-refresh on every query.** Subsequent runs incrementally re-index files whose SHA changed — usually <200 ms.
 - **No `--root` flag.** snapctx walks up from your current directory to find the nearest `.snapctx/index.db`. Run from a deeply nested file; queries still hit the right index.
 - **Stderr for progress, stdout for JSON.** Pipe stdout to `jq` without it choking on log lines.
