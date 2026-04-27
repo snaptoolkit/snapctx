@@ -93,15 +93,15 @@ Here's real output from running that query against the `requests` library (~370 
 
 ## Benchmark: grep+read vs snapctx (tool output only, no agent reasoning)
 
-Controlled minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watch`). Bytes = actual data returned by tools.
+Controlled minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watch`). Tokens estimated at 4 chars/token from actual bytes returned by tools — no agent reasoning included.
 
-| Query | Type | Calls (grep → snapctx) | Speed | Data |
-|---|---|---|---|---|
-| Search pipeline end-to-end | survey | 6 → 1 (**6× fewer**) | 34 ms → 6 ms (**6× faster**) | 55 kB → 26 kB (**2× less**) |
-| Every SQLite connection open | audit | 4 → 2 (**2× fewer**) | 51 ms → 6 ms (**8× faster**) | — |
-| Multi-root discovery logic | architecture | 3 → 1 (**3× fewer**) | 16 ms → 5 ms (**3× faster**) | — |
+| Query | Type | Calls (grep → snapctx) | Speed | Tokens (grep → snapctx) | Token content |
+|---|---|---|---|---|---|
+| Search pipeline end-to-end | survey | 6 → 1 (**6× fewer**) | 34 ms → 6 ms (**6× faster**) | 13.8 k → 6.5 k (**2× fewer**) | grep reads whole files; snapctx returns filtered symbol bodies |
+| Every SQLite connection open | audit | 4 → 2 (**2× fewer**) | 51 ms → 6 ms (**8× faster**) | 1.1 k → 2.4 k (2.2× more) | grep returns raw matched lines; snapctx returns qname + file + call-graph per hit |
+| Multi-root discovery logic | architecture | 3 → 1 (**3× fewer**) | 16 ms → 5 ms (**3× faster**) | 4.2 k → 6.6 k (1.6× more) | grep reads two full files; snapctx includes call-graph depth and neighbors grep cannot produce |
 
-The data column is omitted where grep wins on raw bytes (audit/architecture) — those cases snapctx returns more bytes but with richer structure: qname, call-graph depth, file outlines. These are minimum grep counts; real agents make more exploratory calls, widening the gap.
+Audit and architecture queries return more tokens from snapctx, but the content is structured — every hit already carries its enclosing `qname`, call-graph neighbors, and file outline. The agent synthesises directly without further reads. These are minimum grep counts; real agents make more exploratory calls, widening the call-count gap to 16×.
 
 ---
 
