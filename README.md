@@ -6,7 +6,7 @@
 
 *snapctx = **snap** **c**on**t**e**x**t — a snapshot of the context an agent needs.*
 
-**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **6× fewer tool calls. 8× faster. 2× less data on survey queries. Up to 16× fewer calls in realistic agent usage.** Measured against minimum-grep on this codebase — [see the full numbers](#benchmark-greptread-vs-snapctx-tool-output-only-no-agent-reasoning).
+**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **6× fewer tool calls. 8× faster. 2× fewer tokens on survey queries. Up to 16× fewer calls in realistic agent usage.** Measured against minimum-grep on this codebase — [see the full numbers](#benchmark-greptread-vs-snapctx-tool-output-only-no-agent-reasoning).
 
 Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The parser layer is pluggable — adding a language is a single new file.
 
