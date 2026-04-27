@@ -27,6 +27,64 @@ snapctx context "how does session authentication work"
 
 That's it. You get JSON back: top-5 matching symbols, their full source, who they call, who calls them, file outlines for the surrounding files. Usually enough to answer a non-trivial question in one call.
 
+Here's real output from running that query against the `requests` library:
+
+```jsonc
+{
+  "query": "how does session authentication work",
+  "mode": "hybrid",
+  "seeds": [
+    {
+      "rank": 1,
+      "qname": "requests.sessions:SessionRedirectMixin.rebuild_auth",
+      "kind": "method",
+      "signature": "def rebuild_auth(self, prepared_request, response)",
+      "docstring": "When being redirected we may want to strip authentication from the request to avoid leaking credentials.",
+      "file": "requests/sessions.py",
+      "lines": "282-300",
+      "score": 0.0479,
+      "callees": [
+        {
+          "qname": "requests.sessions:SessionRedirectMixin.should_strip_auth",
+          "signature": "def should_strip_auth(self, old_url, new_url)",
+          "docstring": "Decide whether Authorization header should be removed when redirecting",
+          "line": 290,
+          "callees": [                              // depth-2 hop
+            { "qname": "?:urlparse", "line": 130, "resolved": false }
+          ]
+        }
+      ],
+      "callers": [
+        {
+          "qname": "requests.sessions:SessionRedirectMixin.resolve_redirects",
+          "signature": "def resolve_redirects(self, resp, req, …)",
+          "docstring": "Receives a Response. Returns a generator of Responses or Requests.",
+          "line": 246,
+          "callers": [                              // depth-2 hop
+            { "qname": "requests.sessions:Session.send", "line": 725 }
+          ]
+        }
+      ],
+      "source": "def rebuild_auth(self, prepared_request, response):\n    …"
+    }
+    // … 4 more seeds
+  ],
+  "file_outlines": [
+    {
+      "file": "requests/sessions.py",
+      "symbols": [
+        { "qname": "requests.sessions:merge_setting",   "kind": "function", "lines": "62-89"   },
+        { "qname": "requests.sessions:SessionRedirectMixin", "kind": "class", "lines": "107-353" },
+        { "qname": "requests.sessions:Session",         "kind": "class",    "lines": "354-833"  }
+        // …
+      ]
+    }
+  ],
+  "token_estimate": 5552,
+  "hint": "This response bundles search + callees + callers + top sources + a file outline. If it's still not enough, call `expand`, `outline`, or `source` on a specific qname."
+}
+```
+
 **Requirements:** Python ≥ 3.11, [`uv`](https://github.com/astral-sh/uv) (or `pip install -e .` in a venv), ~200 MB disk for the ONNX embedding model (downloaded on first index).
 
 **Uninstall:** `uv tool uninstall snapctx`.
