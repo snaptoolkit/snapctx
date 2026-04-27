@@ -13,6 +13,199 @@ def test_search_finds_refresh_method(indexed_root: Path) -> None:
     assert top["docstring"].startswith("Refresh")
 
 
+def test_search_with_bodies_inlines_source(indexed_root: Path) -> None:
+    """``--with-bodies`` is the audit-class one-shot path: ranked symbols
+    arrive with full source bodies inline so the agent doesn't have to
+    chase each hit with a separate ``get_source`` round-trip."""
+    out = search_code(
+        "refresh session token", k=3, root=indexed_root, with_bodies=True,
+    )
+    assert out["results"]
+    for hit in out["results"]:
+        assert "source" in hit, f"missing source on hit {hit['qname']}"
+        assert hit["source"], f"empty source on hit {hit['qname']}"
+
+
+def test_search_without_bodies_omits_source(indexed_root: Path) -> None:
+    """Default behavior unchanged — no ``source`` field unless asked."""
+    out = search_code("refresh session token", k=3, root=indexed_root)
+    for hit in out["results"]:
+        assert "source" not in hit
+
+
+def test_search_with_bodies_inlines_referenced_constants(tmp_path: Path) -> None:
+    """A function body that references SCREAMING_SNAKE constants gets each
+    one's terminal literal inlined as ``referenced_constants``, so the
+    agent doesn't have to chase the constant in a separate round-trip."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "defaults.py").write_text(
+        "DEFAULT_MODEL = 'claude-opus-4-5'\n"
+        "DEFAULT_TEMP = 0.5\n"
+    )
+    (repo / "service.py").write_text(
+        "from defaults import DEFAULT_MODEL, DEFAULT_TEMP\n"
+        "\n"
+        "def call_anthropic(prompt):\n"
+        "    return client.messages.create(\n"
+        "        model=DEFAULT_MODEL,\n"
+        "        temperature=DEFAULT_TEMP,\n"
+        "        messages=[{'role': 'user', 'content': prompt}],\n"
+        "    )\n"
+    )
+    index_root(repo)
+
+    out = search_code("call anthropic", k=2, root=repo, with_bodies=True)
+    hit = next(h for h in out["results"] if h["qname"].endswith(":call_anthropic"))
+    consts = hit.get("referenced_constants") or {}
+    assert "DEFAULT_MODEL" in consts
+    assert "claude-opus-4-5" in consts["DEFAULT_MODEL"]["value"]
+    assert "DEFAULT_TEMP" in consts
+
+
+def test_search_with_bodies_skips_constants_when_off(tmp_path: Path) -> None:
+    """The enrichment is paired with ``with_bodies``; default search
+    response stays unchanged."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "defaults.py").write_text("DEFAULT_MODEL = 'claude-opus-4-5'\n")
+    (repo / "service.py").write_text(
+        "from defaults import DEFAULT_MODEL\n"
+        "def call_anthropic(): return DEFAULT_MODEL\n"
+    )
+    index_root(repo)
+
+    out = search_code("call anthropic", k=2, root=repo)  # no with_bodies
+    for hit in out["results"]:
+        assert "referenced_constants" not in hit
+
+
+def test_search_also_unions_multi_term_results(tmp_path: Path) -> None:
+    """``also=[...]`` runs the search across multiple terms in ONE call,
+    deduping and merging — exactly the audit-class case where the agent
+    today fires N separate searches for N keywords."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "anth.py").write_text("def call_anthropic_api(): pass\n")
+    (repo / "oai.py").write_text("def call_openai_api(): pass\n")
+    (repo / "gem.py").write_text("def call_gemini_api(): pass\n")
+    index_root(repo)
+
+    out = search_code(
+        "anthropic", k=10, root=repo, also=["openai", "gemini"],
+    )
+    qnames = {r["qname"] for r in out["results"]}
+    assert "anth:call_anthropic_api" in qnames
+    assert "oai:call_openai_api" in qnames
+    assert "gem:call_gemini_api" in qnames
+    assert out["also"] == ["openai", "gemini"]
+
+
+def test_search_also_dedupes_when_terms_overlap(tmp_path: Path) -> None:
+    """A symbol matched by two different terms should appear once, not twice."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "x.py").write_text("def anthropic_openai_handler(): pass\n")
+    index_root(repo)
+
+    out = search_code("anthropic", k=10, root=repo, also=["openai"])
+    qnames = [r["qname"] for r in out["results"]]
+    assert qnames.count("x:anthropic_openai_handler") == 1
+
+
+def test_outline_directory_returns_every_indexed_file(tmp_path: Path) -> None:
+    """``outline <dir>`` enumerates every indexed file under the directory.
+
+    This is the audit-by-enumeration path: when an agent needs to be
+    exhaustive (every middleware, every model, every command) and ranking
+    might miss long-tail symbols, directory-mode outline returns the
+    structural truth — every indexed file's tree, in one call.
+    """
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    (repo / "middleware").mkdir(parents=True)
+    (repo / "middleware" / "persist.py").write_text("def persist(): pass\n")
+    (repo / "middleware" / "devtools.py").write_text("def devtools(): pass\n")
+    (repo / "middleware" / "immer.py").write_text("def immer(): pass\n")
+    (repo / "app.py").write_text("def main(): pass\n")
+    index_root(repo)
+
+    out = outline(repo / "middleware", root=repo)
+    assert "files" in out
+    assert out["file_count"] == 3
+    file_basenames = {Path(f["file"]).name for f in out["files"]}
+    assert file_basenames == {"persist.py", "devtools.py", "immer.py"}
+
+
+def test_outline_directory_with_bodies_inlines_each_top_level(tmp_path: Path) -> None:
+    """``outline <dir> --with-bodies`` inlines every top-level symbol's
+    source body, so an audit of "every X in this folder" lands the
+    bodies it needs without N follow-up ``source`` calls."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    (repo / "middleware").mkdir(parents=True)
+    (repo / "middleware" / "persist.py").write_text(
+        "def persist():\n    return 'persisting'\n"
+    )
+    (repo / "middleware" / "devtools.py").write_text(
+        "def devtools():\n    return 'devtooling'\n"
+    )
+    index_root(repo)
+
+    out = outline(repo / "middleware", root=repo, with_bodies=True)
+    by_file = {Path(f["file"]).name: f for f in out["files"]}
+    persist_root = next(s for s in by_file["persist.py"]["symbols"]
+                        if s["qname"].endswith(":persist"))
+    assert "source" in persist_root
+    assert "persisting" in persist_root["source"]
+
+
+def test_outline_directory_truncates_at_max_files(tmp_path: Path) -> None:
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for i in range(5):
+        (repo / f"m{i}.py").write_text(f"def fn{i}(): pass\n")
+    index_root(repo)
+
+    out = outline(repo, root=repo, max_files=2)
+    assert out["file_count"] == 2
+    assert out.get("truncated") is True
+    assert out.get("total_files") == 5
+
+
+def test_outline_file_mode_unchanged(indexed_root: Path) -> None:
+    """File-mode outline keeps its existing response shape."""
+    out = outline("auth.py", root=indexed_root)
+    assert "file" in out
+    assert "symbols" in out
+    assert "files" not in out  # not directory mode
+
+
+def test_search_with_bodies_caps_long_bodies(indexed_root: Path) -> None:
+    """Bodies are truncated past ``body_char_cap`` so a single audit
+    call doesn't return arbitrarily large payloads."""
+    out = search_code(
+        "refresh session token", k=3, root=indexed_root,
+        with_bodies=True, body_char_cap=50,
+    )
+    for hit in out["results"]:
+        # 50-char cap + a small "truncated" footer; cap is generous to
+        # keep the test stable across formatter changes.
+        assert len(hit["source"]) < 200
+
+
 def test_exact_name_token() -> None:
     """Single identifier-shaped tokens trigger the name-match bonus; multi-word
     queries don't."""

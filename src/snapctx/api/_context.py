@@ -31,7 +31,9 @@ from snapctx.api._common import (
     parse_line_range,
     rough_token_count,
 )
+from snapctx.api._find import find_literal
 from snapctx.api._graph import collect_neighbors
+from snapctx.api._ranking import extract_audit_literal
 from snapctx.api._search import search_code
 
 
@@ -79,14 +81,22 @@ def context(
         query, root_path, k_seeds, outline_discovery_k, kind, mode, scope=scope,
     )
 
+    audit_block = _maybe_audit_find(query, root_path, scope)
+
     if not seeds:
-        return {
+        payload: dict = {
             "query": query,
             "mode": mode,
             "seeds": [],
-            "hint": "No matches. Try different keywords, or widen with a conceptual query (e.g. 'retry logic' vs 'ErrorHandler').",
-            "token_estimate": 0,
         }
+        if audit_block is not None:
+            payload["find_results"] = audit_block
+        payload["token_estimate"] = 0 if audit_block is None else rough_token_count(payload)
+        payload["hint"] = (
+            _context_hint(audit_block) if audit_block is not None
+            else "No matches. Try different keywords, or widen with a conceptual query (e.g. 'retry logic' vs 'ErrorHandler')."
+        )
+        return payload
 
     from snapctx.api._cross_package import CrossPackageResolver
     idx = open_index(root_path, scope=scope)
@@ -108,7 +118,7 @@ def context(
         resolver.close()
         idx.close()
 
-    payload: dict = {
+    payload = {
         "query": query,
         "mode": mode,
         "seeds": enriched,
@@ -116,12 +126,68 @@ def context(
     }
     if scope is not None:
         payload["scope"] = scope
+
+    if audit_block is not None:
+        payload["find_results"] = audit_block
+
     payload["token_estimate"] = rough_token_count(payload)
-    payload["hint"] = (
+    payload["hint"] = _context_hint(audit_block)
+    return payload
+
+
+def _maybe_audit_find(
+    query: str, root_path: Path, scope: str | None,
+) -> dict | None:
+    """Run ``find`` alongside ``context`` when the query is an unambiguous audit.
+
+    Triggered only when ``extract_audit_literal`` returns a single concrete
+    literal — multi-literal questions ("every LLM provider") are deliberately
+    skipped because the agent will get a better answer by enumerating the
+    literals from the ranked seeds and calling ``find --also``. We surface
+    the literal we picked so the agent can sanity-check the choice.
+    """
+    literal = extract_audit_literal(query)
+    if literal is None:
+        return None
+    found = find_literal(
+        literal, root=root_path, scope=scope,
+        with_bodies=False, max_results=200,
+    )
+    if not found["matches"]:
+        return None
+    # Project to the minimum the agent needs: file:line + qname + the matching
+    # source line. With this they can answer most "every X" questions without
+    # a follow-up call; for full bodies they re-issue ``find <lit> --with-bodies``.
+    return {
+        "literal": literal,
+        "match_count": found["match_count"],
+        "truncated": found["truncated"],
+        "matches": [
+            {
+                "qname": m["qname"],
+                "file": m["file"],
+                "match_line": m["match_line"],
+                "match_text": m["match_text"],
+            }
+            for m in found["matches"]
+        ],
+    }
+
+
+def _context_hint(audit_block: dict | None) -> str:
+    base = (
         "This response bundles search + callees + callers + top sources + a file outline. "
         "If it's still not enough, call `expand`, `outline`, or `source` on a specific qname."
     )
-    return payload
+    if audit_block is None:
+        return base
+    lit = audit_block["literal"]
+    n = audit_block["match_count"]
+    return (
+        f"Audit-class query detected: ran find({lit!r}) for exhaustive coverage — "
+        f"{n} sites in `find_results`. For full bodies of every site, call "
+        f"`find {lit!r} --with-bodies`. " + base
+    )
 
 
 def _seeds_for_query(

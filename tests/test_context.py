@@ -125,3 +125,60 @@ def test_context_drops_builtin_noise_from_callees(tmp_path: Path) -> None:
     assert "m:helper" in callee_qnames
     assert not any(c.startswith("?:") and c.split(":")[1] in {"print", "len", "isinstance"}
                    for c in callee_qnames)
+
+
+def test_context_audit_query_attaches_find_results(tmp_path: Path) -> None:
+    """When the query is an unambiguous audit phrasing, context attaches a
+    `find_results` block with exhaustive coverage of the literal."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    # 8 functions with the literal — well past the default k_seeds=5 cap.
+    for i in range(8):
+        p = repo / f"mod{i}.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            f"def caller_{i}():\n"
+            f"    with transaction.atomic():\n"
+            f"        do_thing_{i}()\n"
+        )
+    index_root(repo)
+
+    out = context("audit every transaction.atomic site", root=repo, mode="lexical")
+    assert "find_results" in out
+    fr = out["find_results"]
+    assert fr["literal"] == "transaction.atomic"
+    assert fr["match_count"] == 8  # every site, not just k_seeds
+    qnames = {m["qname"] for m in fr["matches"]}
+    assert qnames == {f"mod{i}:caller_{i}" for i in range(8)}
+    # Hint mentions the find block + how to upgrade to bodies.
+    assert "find_results" in out["hint"] or "find" in out["hint"].lower()
+
+
+def test_context_non_audit_query_skips_find(tmp_path: Path) -> None:
+    """Plain "how" questions don't trigger the find block — no clutter."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    p = repo / "x.py"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("def login():\n    pass\n")
+    index_root(repo)
+
+    out = context("how does login work", root=repo, mode="lexical")
+    assert "find_results" not in out
+
+
+def test_context_ambiguous_audit_skips_find(tmp_path: Path) -> None:
+    """Multi-literal audits ("every LLM provider call") don't fire find —
+    the extractor returns None when the literal is ambiguous."""
+    from snapctx.api import index_root
+
+    repo = tmp_path / "repo"
+    p = repo / "x.py"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("def login():\n    pass\n")
+    index_root(repo)
+
+    out = context("audit every LLM provider call", root=repo, mode="lexical")
+    assert "find_results" not in out

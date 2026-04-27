@@ -14,11 +14,13 @@ Stable surface — anything imported here is expected to keep working:
 """
 
 from snapctx.api._context import context
+from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
 from snapctx.api._indexer import index_root
 from snapctx.api._multi import (
     context_multi,
     expand_multi,
+    find_literal_multi,
     get_source_multi,
     outline_multi,
     search_code_multi,
@@ -36,6 +38,8 @@ __all__ = [
     "context_multi",
     "expand",
     "expand_multi",
+    "find_literal",
+    "find_literal_multi",
     "get_source",
     "get_source_multi",
     "index_root",

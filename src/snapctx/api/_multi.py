@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from snapctx.api._context import context
+from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
 from snapctx.api._ranking import search_hint
 from snapctx.api._retrieve import get_source, outline
@@ -105,6 +106,8 @@ def search_code_multi(
     k: int = 5,
     kind: str | None = None,
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
+    with_bodies: bool = False,
+    also: tuple[str, ...] | list[str] | None = None,
     anchor: Path | None = None,
 ) -> dict:
     """Run ``search_code`` across multiple roots and merge by score."""
@@ -114,7 +117,10 @@ def search_code_multi(
         return {"query": query, "mode": mode, "results": [], "hint": "No indexed roots."}
 
     ok, errors = _fan_out(
-        lambda r: search_code(query, k=k, kind=kind, root=r, mode=mode),
+        lambda r: search_code(
+            query, k=k, kind=kind, root=r, mode=mode,
+            with_bodies=with_bodies, also=also,
+        ),
         roots, anchor=anchor,
     )
 
@@ -131,7 +137,9 @@ def search_code_multi(
         "mode": mode,
         "roots": _root_labels(roots, anchor),
         "results": top,
-        "hint": search_hint(top),
+        "hint": search_hint(
+            top, query=query, with_bodies=with_bodies, also_used=bool(also),
+        ),
     }
     if errors:
         payload["root_errors"] = errors
@@ -274,6 +282,8 @@ def outline_multi(
     path: str | Path,
     roots: list[Path],
     *,
+    max_files: int = 50,
+    with_bodies: bool = False,
     anchor: Path | None = None,
 ) -> dict:
     """Route ``outline`` to the root whose dir is the longest prefix of ``path``.
@@ -292,14 +302,18 @@ def outline_multi(
 
     target = route_by_path(p, roots)
     if target is not None:
-        result = outline(p, root=target)
+        result = outline(
+            p, root=target, max_files=max_files, with_bodies=with_bodies,
+        )
         result["root"] = root_label(target, anchor)
         return result
 
     # Fall back: try each root, return the first that has matches.
     for r in roots:
-        result = outline(path, root=r)
-        if result.get("symbols"):
+        result = outline(
+            path, root=r, max_files=max_files, with_bodies=with_bodies,
+        )
+        if result.get("symbols") or result.get("files"):
             result["root"] = root_label(r, anchor)
             return result
 
@@ -312,3 +326,59 @@ def outline_multi(
         ),
         "roots_tried": _root_labels(roots, anchor),
     }
+
+
+def find_literal_multi(
+    literal: str,
+    roots: list[Path],
+    *,
+    in_path: str | None = None,
+    kind: str | None = None,
+    with_bodies: bool = False,
+    with_callers: bool = False,
+    body_char_cap: int = 1500,
+    max_results: int = 500,
+    anchor: Path | None = None,
+) -> dict:
+    """Run ``find_literal`` on each root in parallel and union the matches.
+
+    Match order: per-root sort (file, line) is preserved within each root,
+    and roots are concatenated in the input order so output stays
+    deterministic. The combined ``max_results`` cap applies after the
+    union; truncated state is propagated.
+    """
+    from snapctx.roots import root_label
+
+    if not roots:
+        return {"literal": literal, "matches": [], "match_count": 0, "truncated": False}
+
+    ok, errors = _fan_out(
+        lambda r: find_literal(
+            literal, root=r, in_path=in_path, kind=kind,
+            with_bodies=with_bodies, with_callers=with_callers,
+            body_char_cap=body_char_cap, max_results=max_results,
+        ),
+        roots, anchor=anchor,
+    )
+
+    merged: list[dict] = []
+    any_truncated = False
+    for r, res in ok:
+        if res.get("truncated"):
+            any_truncated = True
+        merged.extend(_tag_items(res.get("matches", []), root_label(r, anchor)))
+
+    truncated_total = len(merged) > max_results
+    if truncated_total:
+        merged = merged[:max_results]
+
+    payload: dict = {
+        "literal": literal,
+        "roots": _root_labels(roots, anchor),
+        "matches": merged,
+        "match_count": len(merged),
+        "truncated": any_truncated or truncated_total,
+    }
+    if errors:
+        payload["root_errors"] = errors
+    return payload

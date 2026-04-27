@@ -24,6 +24,8 @@ from snapctx.api import (
     context_multi,
     expand,
     expand_multi,
+    find_literal,
+    find_literal_multi,
     get_source,
     get_source_multi,
     index_root,
@@ -87,11 +89,11 @@ class QueryCommand:
 
 _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
     QueryCommand("search", search_code, search_code_multi,
-                 arg_names=("query", "k", "kind", "mode")),
+                 arg_names=("query", "k", "kind", "mode", "with_bodies", "also")),
     QueryCommand("expand", expand, expand_multi,
                  arg_names=("qname", "direction", "depth")),
     QueryCommand("outline", outline, outline_multi,
-                 arg_names=("path",)),
+                 arg_names=("path", "max_files", "with_bodies")),
     QueryCommand("source", get_source, get_source_multi,
                  arg_names=("qname", "with_neighbors")),
     QueryCommand("context", context, context_multi,
@@ -99,6 +101,11 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
                      "query", "k_seeds", "source_for_top",
                      "file_outline_limit", "outline_discovery_k",
                      "mode", "kind",
+                 )),
+    QueryCommand("find", find_literal, find_literal_multi,
+                 arg_names=(
+                     "literal", "in_path", "kind",
+                     "with_bodies", "with_callers", "max_results",
                  )),
 )
 _QUERY_BY_NAME: dict[str, QueryCommand] = {c.name: c for c in _QUERY_COMMANDS}
@@ -239,6 +246,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mode", choices=["lexical", "vector", "hybrid"], default="hybrid",
         help="Ranker. hybrid = RRF of FTS5 + embeddings (default).",
     )
+    p_search.add_argument(
+        "--with-bodies", dest="with_bodies", action="store_true",
+        help=(
+            "Inline each hit's source body so audit-style 'list every X' "
+            "queries get all the source they need in one call. Pair with "
+            "a higher -k (e.g. -k 20)."
+        ),
+    )
+    p_search.add_argument(
+        "--also", action="append", default=[], metavar="TERM",
+        help=(
+            "Add another search term, repeatable. ``--also openai --also "
+            "gemini`` runs three searches in one call and merges the "
+            "results — ideal for cross-cutting audits over multiple "
+            "keywords. Top-k applies to the merged result set."
+        ),
+    )
     p_search.add_argument("--root", default=".")
     _add_vendor_args(p_search)
 
@@ -251,8 +275,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_expand.add_argument("--root", default=".")
     _add_vendor_args(p_expand)
 
-    p_outline = sub.add_parser("outline", help="Show the symbol tree of a file.")
+    p_outline = sub.add_parser(
+        "outline",
+        help="Show the symbol tree of a file or every indexed file in a directory.",
+    )
     p_outline.add_argument("path")
+    p_outline.add_argument(
+        "--max-files", dest="max_files", type=int, default=50,
+        help="Cap on number of files to outline in directory mode (default 50).",
+    )
+    p_outline.add_argument(
+        "--with-bodies", dest="with_bodies", action="store_true",
+        help=(
+            "Inline each top-level symbol's source body. Pairs with directory "
+            "mode for one-shot 'enumerate every X in this folder' audits."
+        ),
+    )
     p_outline.add_argument("--root", default=".")
     _add_vendor_args(p_outline)
 
@@ -281,6 +319,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p_context.add_argument("--kind", default=None)
     p_context.add_argument("--root", default=".")
     _add_vendor_args(p_context)
+
+    p_find = sub.add_parser(
+        "find",
+        help="Exhaustive literal-substring search over indexed symbol bodies.",
+    )
+    p_find.add_argument("literal")
+    p_find.add_argument(
+        "--in", dest="in_path", default=None, metavar="PATH",
+        help="Restrict the scan to symbols under this path prefix.",
+    )
+    p_find.add_argument("--kind", default=None)
+    p_find.add_argument(
+        "--with-bodies", dest="with_bodies", action="store_true",
+        help="Inline each match's enclosing-symbol source body.",
+    )
+    p_find.add_argument(
+        "--with-callers", dest="with_callers", action="store_true",
+        help="Attach depth-1 callers (deduped) to each match.",
+    )
+    p_find.add_argument(
+        "--max-results", dest="max_results", type=int, default=500,
+    )
+    p_find.add_argument("--root", default=".")
+    _add_vendor_args(p_find)
 
     p_vendor = sub.add_parser(
         "vendor",

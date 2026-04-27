@@ -32,15 +32,16 @@ That's it. You get JSON back: top-5 matching symbols, their full source, who the
 
 ---
 
-## The five commands
+## The commands
 
-You'll mostly use **`context`**. The others let you drill in when `context` isn't enough.
+You'll mostly use **`context`**. The others let you drill in when `context` isn't enough; **`find`** is the right tool when you need exhaustive grep-style coverage instead of ranked top-K.
 
 | Command | What it does | When to use |
 |---|---|---|
-| `snapctx context "query"` | Everything-in-one-call: search + callees + callers + source + outlines. | First move for any question. ~3–10 k tokens back. |
-| `snapctx search "query"` | Top-K ranked symbols with signatures, no bodies. | When you only need names, not bodies. |
-| `snapctx outline path/file.py` | Symbol tree of a file (functions / classes / constants, nested). | Cheaper than reading the whole file. |
+| `snapctx context "query"` | Everything-in-one-call: search + callees + callers + source + outlines. **Audit-aware**: when the query is an unambiguous audit phrasing (e.g. "audit every `transaction.atomic` site"), also runs `find` on the literal and attaches an exhaustive `find_results` block. | First move for any question. ~3–10 k tokens back. |
+| `snapctx search "query"` | Top-K ranked symbols with signatures. Add `--with-bodies` to inline source. Add `--also <term2> [...]` to batch related terms in one call. | Ranked discovery; `--with-bodies` for one-shot audits when ≤ K hits. |
+| `snapctx find "<literal>"` | **Exhaustive** literal-substring enumeration over every indexed symbol body. Returns ALL matches (not ranked, not capped). Add `--with-bodies` to inline containing-symbol source; add `--with-callers` to attach depth-1 callers (deduped) to every hit. | "Every place that uses X" audits — matches grep coverage with structured output. `--with-callers` turns it into "every site AND who triggers them" in one call. |
+| `snapctx outline path/` | Symbol tree of a file or directory (functions / classes / constants, nested). Add `--with-bodies` to inline source for every symbol. | Cheaper than reading whole files; directory mode gives you a module map. |
 | `snapctx source <qname>` | Full body of a single symbol. Add `--with-neighbors` for resolved callee signatures. | When you have an exact qname and want its source. |
 | `snapctx expand <qname>` | Walk the call graph. `--direction callees \| callers \| both`, `--depth 1 \| 2`. | "Who calls this?" / "What does this depend on?" |
 
@@ -85,11 +86,14 @@ For ANY question about unfamiliar code in this repo, your first move is `snapctx
 
 Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outlines[]`, and a `hint`. Typical response 3–10 k tokens.
 
+**Audit-aware**: phrasings like *"audit every transaction.atomic site"*, *"list every useState call"*, *"every place that uses X"* trigger a parallel exhaustive `find` on the literal — the response gets a `find_results` block listing every site (file:line, qname, matching line). Saves you from having to know whether to use `context` or `find` for cross-cutting audit questions.
+
 ### Drill-down (only if `context` wasn't enough)
 
-- `snapctx search "<query>"` — top-K ranked symbols, no bodies.
+- `snapctx search "<query>"` — top-K ranked symbols. Add `--with-bodies` to inline source; add `--also <term2> [...]` to batch related terms.
+- `snapctx find "<literal>" --with-bodies` — **exhaustive** substring enumeration across all indexed bodies. Use this for "every place that uses X" audits where ranked search would cap the long tail. Add `--with-callers` to also attach the deduped depth-1 caller list to each hit (audit + impact analysis in one call).
 - `snapctx expand <qname> --direction callees|callers|both --depth 1|2` — call-graph neighborhood.
-- `snapctx outline <path>` — symbol tree of a single file.
+- `snapctx outline <path>` — symbol tree of a single file or directory; add `--with-bodies` to inline every symbol's source.
 - `snapctx source <qname> --with-neighbors` — full body + resolved callee signatures.
 
 ### What just works
@@ -102,7 +106,7 @@ Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outline
 
 ### When to fall back to Grep
 
-snapctx indexes **symbols**, not raw text. Use `Grep` for: URL routes (`"/api/v1/users"`), TODO/FIXME comments, env var names, filename patterns. For everything else (function bodies, class structure, "where is X used", "how does Y work") — use snapctx.
+snapctx indexes **symbols**, not raw text. Use `Grep` for: URL routes (`"/api/v1/users"`), TODO/FIXME comments, env var names, filename patterns. For everything else (function bodies, class structure, "where is X used", "how does Y work") — use snapctx. For literal substrings that *are* code identifiers or call-site fragments (`"transaction.atomic"`, `"useState"`), prefer `snapctx find` over `Grep`: same exhaustive coverage, with the containing qname attached to every hit.
 
 ### Tips
 
@@ -132,6 +136,28 @@ We measured both paths on three real codebases (a Django backend, zustand, and s
 | snapctx | survey | snapctx context → embedder load → SQLite search | 9 k | 41 k | 5× | 1 → 11 |
 
 **The pattern.** Audit-class questions ("list every X and its Y") — where grep+read forces the agent to read 8–14 files in full — consistently hit **10–22× token reduction**. Survey questions ("trace this flow") land at **3–5×**. The harder the question, the wider the gap.
+
+**Exhaustive literal audits — `find` vs ranked `search`.** Some audits are about *every* call site of a known string, not the most relevant ones. Ranked search caps the long tail; `find` walks the indexed bodies and returns every hit. Measured on a Django backend with a Sonnet sub-agent answering *"audit every `transaction.atomic` site"*:
+
+| Approach | Sites found | snapctx calls | Bash calls | Tokens | Wall |
+|---|---:|---:|---:|---:|---:|
+| `search --mode lexical -k 100 --with-bodies` | 9 / 22 | 11 | 12 | 37 k | 185 s |
+| `context "audit every transaction.atomic site"` (audit-aware) | 22 / 22 | 2 | 3 | 36 k | 81 s |
+| **`find "transaction.atomic" --with-bodies`** | **22 / 22** | **1** | **1** | **33 k** | **61 s** |
+| `find "..." --with-bodies --with-callers` | 22 / 22 | 1 | 2 | 35 k | 67 s |
+| Reference: `grep -rn` + read top files | 22 / 22 | n/a | 50 | 39 k | 146 s |
+
+`find` matches `grep` exactly (22 / 22) in a single tool call. The ranked-search variant misses ~60% because the agent stops after a few overlapping `-k 100` pages. **For audit-class questions, the bottleneck wasn't ranking quality — it was the contract: ranked + capped vs exhaustive.**
+
+**`find` vs `grep -rn` — the measured gap:**
+
+- **50× fewer tool calls** (1 vs 50). Every grep iteration forces the agent to read raw lines, infer which file to open next, issue a read, and decide whether to grep again. `find` does all of that in the index.
+- **2.4× faster wall clock** (61 s vs 146 s).
+- **Output tokens roughly equal** (33 k vs 39 k) — the token savings vs `grep` aren't the story here. The story is the call-count collapse and what the output *is*.
+
+What `grep` returns that the agent still has to process: raw matched lines with no surrounding context, no function name, no caller information. What `find` returns: `qname` (the enclosing function or method, resolved), file, line, and the matching line — structured, ready to synthesize. Add `--with-bodies` and you get the full enclosing symbol; add `--with-callers` and you get impact analysis in the same call. There is no single `grep` command that does any of those.
+
+The audit-aware `context` row is the win for agents that default to `context` as their first move: same coverage as raw `find` (22 / 22), at the cost of one extra targeted call to fetch bodies. They no longer need to know whether to reach for `context` or `find` — `context` routes them. The `--with-callers` row trades ~6 s wall and ~2 k tokens for inline impact analysis; in our run it produced a sharper synthesis that explicitly addressed orphaned atomic blocks.
 
 **Tool calls collapse from 11–18 to 1.** Always. That's the bigger lever in practice: each agent call costs ~3–8 s of LLM reasoning on top of the tool execution. **Trading 11 tool-call cycles for 1 turns ~30–100 s of agent wall-clock into ~5 s.**
 
@@ -292,11 +318,12 @@ The walker skips vendored/bundled assets by default: `node_modules`, `.venv`, `d
 
 ### Query-time
 
-All five operations read from the same SQLite file. They're cheap and composable; `context` is the all-in-one wrapper.
+All operations read from the same SQLite file. They're cheap and composable; `context` is the all-in-one wrapper.
 
-- **`search_code(query, k, kind?, mode)`** — three modes: `lexical` (FTS5/BM25, ~2 ms), `vector` (cosine over embeddings, ~5 ms), `hybrid` (weighted RRF of both, default). Hybrid uses `vec_weight=1.5`, `lex_weight=1.0`, plus a `test_penalty=0.6` multiplier so test methods don't out-rank real code.
+- **`search_code(query, k, kind?, mode, with_bodies?, also?)`** — three modes: `lexical` (FTS5/BM25, ~2 ms), `vector` (cosine over embeddings, ~5 ms), `hybrid` (weighted RRF of both, default). Hybrid uses `vec_weight=1.5`, `lex_weight=1.0`, plus a `test_penalty=0.6` multiplier so test methods don't out-rank real code. `with_bodies=True` inlines source bodies (with constants pre-resolved) for one-shot audits; `also=[…]` runs the same query for several related terms in a single call.
+- **`find_literal(literal, kind?, in_path?, with_bodies?, with_callers?)`** — exhaustive literal-substring scan over indexed symbol bodies. Returns every match (file, qname, match_line, match_text), innermost-symbol deduped so a method beats its enclosing class. Complement to `search_code` when the question is "every place that uses X" rather than "the most relevant place". `with_callers=True` attaches the deduped depth-1 caller list to each hit so audit + impact analysis fits in one call.
 - **`expand(qname, direction, depth)`** — walk the call graph. Returns signatures + docstring summaries of neighbors, no bodies.
-- **`outline(path)`** — file's symbol tree, nested by containment.
+- **`outline(path, with_bodies?)`** — file or directory symbol tree, nested by containment; `with_bodies=True` inlines source for every symbol.
 - **`get_source(qname, with_neighbors)`** — full source of a single symbol; `with_neighbors=True` appends signatures of resolved callees.
 - **`context(query, …)`** — the one-shot. Runs `search_code` (or fast-paths to a direct qname match when the query contains `:` and matches a known qname). For each of the top `k_seeds=5` hits:
   - Signature, docstring, file, line range, decorators, score.
@@ -305,6 +332,8 @@ All five operations read from the same SQLite file. They're cheap and composable
   - **Constant-alias resolution**: if the seed is `NAME = OTHER_NAME`, the chain is followed (up to 3 hops, cross-file) and the terminal literal is attached as `resolved_value`. So the agent sees the real string (`'claude-opus-4-5'`) without a separate `source` call on the registry module.
 
   File outlines for up to 8 unique files among the search candidates — the candidate pool is overfetched beyond the top-K seeds (default `outline_discovery_k=15`) so survey questions get full coverage. Typical output: 3–8 k tokens.
+
+  **Audit-aware enrichment.** A conservative classifier (`extract_audit_literal`) detects audit phrasings that wrap a single literal — *"audit every X"*, *"every place that uses X"*, *"list every X"* — and returns the literal only when exactly one identifier-shaped token survives stripping audit fillers ("site", "call", "place", "uses", …). On a hit, `context` runs `find_literal` in the same call and attaches a `find_results` block (file, qname, match_line, match_text per site, no bodies — agent re-issues `find <lit> --with-bodies` if needed). Multi-literal questions ("every LLM provider call") and concept questions ("every model field") deliberately skip the find block to avoid clutter.
 
 ### Why hybrid won
 
@@ -529,7 +558,7 @@ uv pip install --group dev      # or: uv pip install pytest
 pytest
 ```
 
-180+ tests pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
+205+ tests pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
 
 ---
 
@@ -556,6 +585,12 @@ pytest
 - [x] **File watcher** (`snapctx watch`) — debounced auto re-index on save, typical run ~5 ms warm
 - [x] **On-demand vendor packages with per-package isolation** — prefix a query with `<pkg>:` (or pass `--pkg <name>`) and snapctx ingests just that package into its own dedicated index. Vector neighborhoods stay focused; qnames re-root at the package. Managed via `snapctx vendor list` / `vendor forget`
 - [x] **Cross-package call-graph stitching** — when a call inside one indexed package targets a name imported from another *also-indexed* package, `expand` and `context` follow the import to the sibling index and return the resolved symbol tagged with its package
+- [x] **`find` — exhaustive literal-substring enumeration** over every indexed symbol body. Closes the audit-class gap vs `grep`: returns every match (not ranked, not capped), with the containing qname attached. Validated 22 / 22 vs raw `grep` on a Django audit.
+- [x] **`find --with-callers`** — attaches deduped depth-1 callers to each hit so audit + impact analysis ("every X site AND who triggers them") is one call
+- [x] **Audit-aware `context`** — when the query is unambiguous audit phrasing wrapping a single literal, `context` runs `find` on the literal in the same call and attaches a `find_results` block. Makes "context first" the right move even for cross-cutting audit questions
+- [x] **`search --with-bodies`** for one-shot audit-class queries (inlines source with constant pre-resolution); **`search --also <term2> [...]`** to batch related terms in one call
+- [x] **`outline --with-bodies`** + directory mode — exhaustive enumeration over a folder
+- [x] **Smart hints** in API responses — audit-class queries get a hint nudging the agent toward `--with-bodies` or `find`
 
 **Planned next (snapctx core):**
 - [ ] **`snapctx serve` daemon** — long-running process holds the fastembed model + SQLite handle warm; CLI invocations talk to it over a Unix socket. Closes the ~400 ms cold-CLI gap so every query is 5–10 ms whether or not you have `snapctx watch` running. Lifecycle: auto-start on first query, idle-stop after N minutes, single-instance lock per repo.

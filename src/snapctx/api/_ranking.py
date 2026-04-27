@@ -208,16 +208,100 @@ def suggest_next_action(row: sqlite3.Row) -> str:
     return "read_body"
 
 
-def search_hint(results: list[dict]) -> str:
+_AUDIT_PHRASE_RE = re.compile(
+    r"\b(list every|every place|every call|every use|audit|find all|"
+    r"all the|where (?:are|is|do)|enumerate)\b",
+    re.IGNORECASE,
+)
+
+
+# Words that audit-style queries pad around the actual identifier we want
+# to find. Stripping these keeps the literal extractor from latching onto
+# generic English when the query is "every transaction.atomic *site*".
+_AUDIT_FILLERS = frozenset({
+    "site", "sites", "usage", "usages", "use", "uses", "used",
+    "place", "places", "call", "calls", "called", "caller", "callers",
+    "occurrence", "occurrences", "instance", "instances",
+    "code", "codebase", "repo", "project", "module", "modules",
+    "function", "functions", "method", "methods", "class", "classes",
+    "model", "models", "field", "fields",
+})
+
+
+def extract_audit_literal(query: str) -> str | None:
+    """If the query is an audit phrasing wrapping a single identifier, return it.
+
+    Used by ``context()`` to decide whether to run ``find`` alongside the
+    ranked search. Conservative on purpose: returns ``None`` whenever the
+    extracted candidate is ambiguous so the agent isn't surprised by a
+    misfired exhaustive scan.
+
+    Heuristic: strip the audit phrase itself, then look for identifier-
+    shaped tokens (camelCase, snake_case, dotted, CONSTANT_CASE) in the
+    remainder. A single dotted token wins outright (``transaction.atomic``
+    is unambiguous). Otherwise a single non-filler identifier wins.
+    Multiple plausible candidates → ``None``.
+    """
+    if not query or not _AUDIT_PHRASE_RE.search(query):
+        return None
+    cleaned = _AUDIT_PHRASE_RE.sub(" ", query)
+    tokens = [t.strip(".,;:!?\"'`()[]{}") for t in cleaned.split()]
+    tokens = [t for t in tokens if t]
+
+    dotted = [t for t in tokens if "." in t and looks_like_identifier(t)]
+    if len(dotted) == 1:
+        return dotted[0]
+    if len(dotted) > 1:
+        return None
+
+    others = [
+        t for t in tokens
+        if looks_like_identifier(t) and t.lower() not in _AUDIT_FILLERS
+    ]
+    if len(others) == 1:
+        return others[0]
+    return None
+
+
+def search_hint(
+    results: list[dict],
+    *,
+    query: str = "",
+    with_bodies: bool = False,
+    also_used: bool = False,
+) -> str:
+    """One-line hint nudging the agent toward the next-best operation.
+
+    The ranker emits these as part of every search response. Beyond the
+    classic "next_action on the top hit" cue, we also nudge toward the
+    audit-class flags (``--with-bodies``, ``--also``) when the query
+    phrasing looks like an audit and those flags weren't used. Saves
+    the agent from having to remember the full toolset.
+    """
     if not results:
         return (
             "No matches. Try synonyms (e.g. 'throttle' instead of 'rate limit'), "
             "or a different `kind` filter."
         )
+
+    looks_like_audit = bool(_AUDIT_PHRASE_RE.search(query)) if query else False
+    if looks_like_audit and not with_bodies:
+        return (
+            "Audit-class query detected. Add --with-bodies to inline each "
+            "hit's source AND pre-resolve referenced constants in one call "
+            "(no follow-up `source` needed)."
+            + (" Use --also TERM to batch additional keywords." if not also_used else "")
+        )
+
     top = results[0]
     qname = top["qname"]
     if top["next_action"] == "expand":
         return f"To see callees of the top result, call expand({qname!r})."
     if top["next_action"] == "outline":
         return f"To see {qname}'s members, call outline with its file."
+    if not with_bodies and any(r.get("next_action") == "read_body" for r in results[:3]):
+        return (
+            "Several top results suggest reading bodies. Re-run with "
+            "--with-bodies to inline source for all hits in one call."
+        )
     return f"If the signature isn't enough, call get_source({qname!r})."

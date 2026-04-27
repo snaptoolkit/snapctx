@@ -18,15 +18,32 @@ from snapctx.api._common import (
 )
 
 
-def outline(path: str | Path, root: str | Path = ".", scope: str | None = None) -> dict:
-    """List all symbols defined in a file, nested by parent.
+def outline(
+    path: str | Path,
+    root: str | Path = ".",
+    scope: str | None = None,
+    max_files: int = 50,
+    with_bodies: bool = False,
+    body_char_cap: int = 1500,
+) -> dict:
+    """List all symbols defined in a file (or every indexed file in a directory).
 
     Accepts an absolute path or a path relative to ``root``. Returns the file's
     symbol tree in source order, each node carrying its signature, one-line
-    docstring summary, and line range. No bodies.
+    docstring summary, and line range. No bodies by default.
 
-    Use this instead of reading a whole file when you only need to know what
-    it defines — typically a 10x token savings over ``get_source`` of the file.
+    **Directory mode** — when ``path`` resolves to a directory, every indexed
+    file under that directory (recursively) is outlined and returned together
+    in one response. This is the exhaustive-enumeration path: grep+read's
+    natural strength was directory globbing; ``outline <dir>`` matches it.
+    Capped at ``max_files`` files to keep responses bounded; the response sets
+    ``truncated: true`` when the cap was hit.
+
+    ``with_bodies=True`` inlines the source body of every top-level symbol
+    (capped per-symbol at ``body_char_cap``). For directory-mode audits this
+    collapses ``outline <dir>`` + N follow-up ``source <qname>`` calls into a
+    single response — the same one-shot pattern ``search --with-bodies``
+    delivers, but anchored on directory structure rather than ranking.
     """
     root_path = Path(root).resolve()
     target = Path(path)
@@ -42,8 +59,14 @@ def outline(path: str | Path, root: str | Path = ".", scope: str | None = None) 
             target = (anchor / target).resolve()
         else:
             target = (root_path / target).resolve()
-    file_str = str(target)
 
+    if target.is_dir():
+        return _outline_directory(
+            root_path, target, scope=scope, max_files=max_files,
+            with_bodies=with_bodies, body_char_cap=body_char_cap,
+        )
+
+    file_str = str(target)
     idx = open_index(root_path, scope=scope)
     try:
         rows = idx.symbols_in_file(file_str)
@@ -58,29 +81,140 @@ def outline(path: str | Path, root: str | Path = ".", scope: str | None = None) 
         }
 
     by_qname = {row["qname"]: row for row in rows}
-    return {"file": file_str, "symbols": _nest_symbols(rows, by_qname)}
+    tree = _nest_symbols(
+        rows, by_qname,
+        with_bodies=with_bodies, body_char_cap=body_char_cap,
+    )
+    response: dict = {"file": file_str, "symbols": tree}
+    # Nudge toward the one-call shape when the file is small enough that
+    # bodies fit comfortably in one response. Saves the agent from doing
+    # outline-then-N-source for files with a handful of symbols.
+    if not with_bodies and 0 < len(tree) <= 10:
+        response["hint"] = (
+            f"Add --with-bodies to get all {len(tree)} top-level "
+            "symbols' source in one call (no follow-up `source` needed)."
+        )
+    return response
 
 
-def _nest_symbols(rows: list[sqlite3.Row], by_qname: dict[str, sqlite3.Row]) -> list[dict]:
+def _outline_directory(
+    root_path: Path, dir_path: Path, *,
+    scope: str | None, max_files: int,
+    with_bodies: bool = False, body_char_cap: int = 1500,
+) -> dict:
+    """Outline every indexed source file under a directory.
+
+    Used for exhaustive enumeration ("list every middleware in
+    ``src/middleware/``"). Reads ``files.path`` rows directly from the
+    index (cheap; one SQL query) so we don't re-walk the filesystem.
+    """
+    idx = open_index(root_path, scope=scope)
+    try:
+        prefix = str(dir_path).rstrip("/") + "/"
+        rows = idx.conn.execute(
+            "SELECT DISTINCT file FROM symbols "
+            "WHERE file LIKE ? || '%' ORDER BY file",
+            (prefix,),
+        ).fetchall()
+        all_files = [r["file"] for r in rows]
+        files = all_files[:max_files]
+
+        outlines: list[dict] = []
+        for f in files:
+            file_rows = idx.symbols_in_file(f)
+            if not file_rows:
+                continue
+            by_qname = {r["qname"]: r for r in file_rows}
+            outlines.append({
+                "file": f,
+                "symbols": _nest_symbols(
+                    file_rows, by_qname,
+                    with_bodies=with_bodies, body_char_cap=body_char_cap,
+                ),
+            })
+    finally:
+        idx.close()
+
+    response: dict = {
+        "directory": str(dir_path),
+        "files": outlines,
+        "file_count": len(outlines),
+    }
+    if len(all_files) > max_files:
+        response["truncated"] = True
+        response["total_files"] = len(all_files)
+        response["hint"] = (
+            f"Showing first {max_files} of {len(all_files)} indexed files. "
+            f"Pass max_files=N to widen, or narrow the path."
+        )
+    if not outlines:
+        response["hint"] = (
+            f"No indexed files under {dir_path}. Did you run `snapctx index` "
+            f"on this root, and is the directory under it?"
+        )
+    elif not with_bodies and "hint" not in response:
+        # Directory enumeration's killer feature is one-call exhaustive
+        # audit; surface --with-bodies as the natural next step.
+        response["hint"] = (
+            f"Got {len(outlines)} files' symbol trees. Add --with-bodies "
+            "to inline each top-level symbol's source — "
+            "one call answers a 'list every X in this folder' audit."
+        )
+    return response
+
+
+def _nest_symbols(
+    rows: list[sqlite3.Row],
+    by_qname: dict[str, sqlite3.Row],
+    *,
+    with_bodies: bool = False,
+    body_char_cap: int = 1500,
+) -> list[dict]:
     """Build a tree from a flat list of Symbols ordered by line_start.
 
     A symbol's children are the symbols whose parent_qname is this symbol's qname.
+    When ``with_bodies`` is set, each *root* symbol gets its source body
+    inlined (root only — children are within the root's body anyway).
     """
     children_of: dict[str | None, list[sqlite3.Row]] = {}
     for row in rows:
         children_of.setdefault(row["parent_qname"], []).append(row)
 
-    def build(row: sqlite3.Row) -> dict:
+    def build(row: sqlite3.Row, *, attach_body: bool) -> dict:
         d = row_to_symbol_dict(row)
         d["docstring"] = docstring_summary(row["docstring"])
+        if attach_body:
+            body = _read_symbol_body(row, body_char_cap)
+            if body is not None:
+                d["source"] = body
         kids = children_of.get(row["qname"], [])
         if kids:
-            d["children"] = [build(k) for k in kids]
+            d["children"] = [build(k, attach_body=False) for k in kids]
         return d
 
     # Roots are rows whose parent_qname is None, or whose parent isn't in this file.
     roots = [r for r in rows if r["parent_qname"] is None or r["parent_qname"] not in by_qname]
-    return [build(r) for r in roots]
+    return [build(r, attach_body=with_bodies) for r in roots]
+
+
+def _read_symbol_body(row, body_char_cap: int) -> str | None:
+    """Slice a symbol's source body from its file, capped at ``body_char_cap``.
+
+    Returns ``None`` on an unreadable file so the response stays JSON-clean.
+    """
+    try:
+        text = Path(row["file"]).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    start = max(1, int(row["line_start"]))
+    end = max(start, int(row["line_end"]))
+    body = "\n".join(lines[start - 1 : end])
+    if len(body) > body_char_cap:
+        body = body[:body_char_cap] + (
+            f"\n# ... truncated ({len(body) - body_char_cap} chars) ..."
+        )
+    return body
 
 
 def get_source(
