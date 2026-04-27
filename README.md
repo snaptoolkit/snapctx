@@ -161,12 +161,16 @@ The audit-aware `context` row is the win for agents that default to `context` as
 
 **Tool calls collapse from 11–18 to 1.** Always. That's the bigger lever in practice: each agent call costs ~3–8 s of LLM reasoning on top of the tool execution. **Trading 11 tool-call cycles for 1 turns ~30–100 s of agent wall-clock into ~5 s.**
 
-**The bill compounds even more.** Every agent round-trip re-processes the entire conversation, so *cumulative billed input tokens* grow roughly quadratically with call count, not linearly. On a hard audit:
+**API spend: what we actually measured.** The Sonnet sub-agent runs on the `transaction.atomic` audit reported total billed tokens (input + output across the full conversation) from the Anthropic API:
 
-- grep+read loop: 11–18 calls accumulating ~5–15 k of new context per call ≈ **1–2 M billed input tokens**
-- snapctx: one call returns 5–10 k structured tokens, agent answers in one more turn ≈ **15–25 k billed input tokens**
+| Approach | Total billed tokens | Sites found |
+|---|---:|---:|
+| `search --mode lexical -k 100 --with-bodies` (11 calls) | 37,155 | 9 / 22 |
+| `context` audit-aware (2 calls) | 36,003 | 22 / 22 |
+| `find --with-bodies` (1 call) | 33,147 | 22 / 22 |
+| `find --with-bodies --with-callers` (1 call) | 34,588 | 22 / 22 |
 
-That's **~30–80× lower API spend** on cross-cutting audit questions, on top of the wall-clock win. And past ~100 k tokens of accumulated grep noise, agents also start losing the thread or hitting context-window limits — the failure mode that produces confident-but-wrong audits.
+The billed totals are close across all snapctx approaches because structured tool responses don't blow up the conversation context — the agent is never re-processing a 200-line file dump. The real gap appears when the agent is doing the grep+read loop with large file reads: every `Read` on a 300-line service file adds ~4–8 k tokens to the context, and the agent re-processes the entire growing conversation on each subsequent call. Past ~10 file reads the cumulative re-processing cost dominates. That's also the point where agents start losing the thread or producing confident-but-incomplete audits — the search-lexical run in this benchmark found 9 / 22 sites not because the 13 missing sites weren't returned, but because the agent inferred the list was exhausted after a few overlapping pages.
 
 **Latency for snapctx itself:**
 
