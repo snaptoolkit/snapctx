@@ -240,7 +240,7 @@ Example: inside django, `tasks.base:Task.call` invokes `async_to_sync`. If you'v
 { "qname": "sync:async_to_sync", "package": "asgiref", … }
 ```
 
-instead of an unresolved name. Honors the explicit-prefix rule: cross-resolution *only* peeks into packages you've already chosen to index — it never spontaneously fans out into something you didn't ask for. Calls into uninidexed packages stay marked `resolved: false`, and you can `--pkg <name>` to bring them in.
+instead of an unresolved name. Honors the explicit-prefix rule: cross-resolution *only* peeks into packages you've already chosen to index — it never spontaneously fans out into something you didn't ask for. Calls into unindexed packages stay marked `resolved: false`, and you can `--pkg <name>` to bring them in.
 
 ---
 
@@ -367,7 +367,7 @@ Measured on a mixed-language monorepo (Python Django backend + Next.js frontend,
 | Warm in-process, hybrid `context()` (depth-2 trace) | **5–10 ms** |
 | Warm in-process, exact qname | **1–2 ms** |
 
-The cold-to-warm delta is almost entirely the fastembed ONNX model load. Inside `snapctx watch` (or a future `snapctx serve` daemon — see Roadmap) the model loads once and every query is single-digit ms.
+The cold-to-warm delta is almost entirely the fastembed ONNX model load. Inside `snapctx watch` (or the internal serve daemon — `python -m snapctx._serve`, used by the warm client) the model loads once and every query is single-digit ms. A first-class `snapctx serve` CLI command is on the roadmap.
 
 The three levers we tuned (85 s → 10 s on the same repo): walker-level vendor-bundle filter, TS signature truncation to 240 chars so massive `const X: ColumnDef<T>[] = [...]` declarations don't bloat the index, and `fastembed` batch size = 4 (counter-intuitive, but smaller batches mean less ONNX padding waste on mixed-length texts).
 
@@ -378,7 +378,7 @@ The three levers we tuned (85 s → 10 s on the same repo): walker-level vendor-
 Everything the CLI exposes is also a Python function. Import from `snapctx.api`:
 
 ```python
-from snapctx.api import context, search_code, expand, outline, get_source, index_root
+from snapctx.api import context, search_code, find_literal, expand, outline, get_source, index_root
 
 # Build or refresh the index.
 index_root("/path/to/repo")
@@ -389,6 +389,13 @@ for seed in pack["seeds"]:
     print(seed["qname"], seed["signature"])
     if "resolved_value" in seed:
         print("  → ", seed["resolved_value"]["value"])
+
+# Exhaustive literal-substring audit.
+result = find_literal("transaction.atomic", root="/path/to/repo", with_bodies=True, with_callers=True)
+for match in result["matches"]:
+    print(match["qname"], match["file"], match["match_line"])
+    for caller in match.get("callers", []):
+        print("  ←", caller["qname"])
 
 # Composable operations.
 hits = search_code("throttle", k=3, mode="vector", root="/path/to/repo")
@@ -489,6 +496,32 @@ pack = context_multi("login session", roots, anchor=Path("."))
 
 `next_action` is the tool's opinion about what the agent should do next with the top hit. Classes → `outline`. Functions with short docstrings → `read_body`. Otherwise → `expand`.
 
+### `find_literal`
+
+```jsonc
+{
+  "literal": "transaction.atomic",
+  "match_count": 22,
+  "truncated": false,
+  "matches": [
+    {
+      "qname": "parser.services:StrongsComparisonService.save_comparison",
+      "kind": "method",
+      "signature": "def save_comparison(self, …)",
+      "file": "/abs/path/parser/services.py",
+      "lines": "1040-1080",
+      "match_line": 1056,
+      "match_text": "        with transaction.atomic():",
+      "source": "def save_comparison(…):\n    …",   // present with --with-bodies
+      "callers": [                                   // present with --with-callers
+        { "qname": "parser.views:ComparisonView.post", "line": 214 }
+      ]
+    }
+  ],
+  "hint": "22 sites found, bodies inlined. Callers attached."
+}
+```
+
 ---
 
 ## Security model
@@ -549,7 +582,7 @@ uv pip install --group dev      # or: uv pip install pytest
 pytest
 ```
 
-205+ tests pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
+205 tests pass. First run downloads the ONNX embedding model (~30 MB, cached under `~/.cache/huggingface/`).
 
 ---
 
