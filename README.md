@@ -147,7 +147,15 @@ We measured both paths on three real codebases (a Django backend, zustand, and s
 | `find "..." --with-bodies --with-callers` | 22 / 22 | 1 | 2 | 35 k | 67 s |
 | Reference: `grep -rn` + read top files | 22 / 22 | n/a | 50 | 39 k | 146 s |
 
-`find` matches `grep` exactly (22 / 22) in a single tool call, with the containing qname attached to every hit — no separate read-the-file round-trips needed. The ranked-search variant misses ~60% because the agent stops after a few overlapping `-k 100` pages. **For audit-class questions, the bottleneck wasn't ranking quality — it was the contract: ranked + capped vs exhaustive.**
+`find` matches `grep` exactly (22 / 22) in a single tool call. The ranked-search variant misses ~60% because the agent stops after a few overlapping `-k 100` pages. **For audit-class questions, the bottleneck wasn't ranking quality — it was the contract: ranked + capped vs exhaustive.**
+
+**`find` vs `grep -rn` — the measured gap:**
+
+- **50× fewer tool calls** (1 vs 50). Every grep iteration forces the agent to read raw lines, infer which file to open next, issue a read, and decide whether to grep again. `find` does all of that in the index.
+- **2.4× faster wall clock** (61 s vs 146 s).
+- **Output tokens roughly equal** (33 k vs 39 k) — the token savings vs `grep` aren't the story here. The story is the call-count collapse and what the output *is*.
+
+What `grep` returns that the agent still has to process: raw matched lines with no surrounding context, no function name, no caller information. What `find` returns: `qname` (the enclosing function or method, resolved), file, line, and the matching line — structured, ready to synthesize. Add `--with-bodies` and you get the full enclosing symbol; add `--with-callers` and you get impact analysis in the same call. There is no single `grep` command that does any of those.
 
 The audit-aware `context` row is the win for agents that default to `context` as their first move: same coverage as raw `find` (22 / 22), at the cost of one extra targeted call to fetch bodies. They no longer need to know whether to reach for `context` or `find` — `context` routes them. The `--with-callers` row trades ~6 s wall and ~2 k tokens for inline impact analysis; in our run it produced a sharper synthesis that explicitly addressed orphaned atomic blocks.
 
