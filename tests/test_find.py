@@ -184,14 +184,14 @@ def test_find_via_cli_command(tmp_path: Path) -> None:
     """End-to-end CLI invocation through the QueryCommand registry."""
     import subprocess
     import json
+    import sys
 
     repo = tmp_path / "repo"
     _write(repo, "x.py", "def caller():\n    transaction.atomic\n")
     index_root(repo)
 
-    snapctx_bin = "/Users/ktrichas/projects/snaptoolkit/snapctx/.venv/bin/snapctx"
     proc = subprocess.run(
-        [snapctx_bin, "find", "transaction.atomic", "--root", str(repo)],
+        [sys.executable, "-m", "snapctx.cli", "find", "transaction.atomic", "--root", str(repo)],
         capture_output=True, text=True, cwd=repo,
     )
     assert proc.returncode == 0
