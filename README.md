@@ -91,7 +91,7 @@ Here's real output from running that query against the `requests` library (~370 
 
 ---
 
-## Tool benchmark: grep+read vs snapctx
+## Tool benchmark
 
 Controlled minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watch`). Tokens estimated at 4 chars/token from actual bytes returned by tools — no agent reasoning included.
 
