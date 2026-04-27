@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from snapctx.api._context import context
+from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
 from snapctx.api._ranking import search_hint
 from snapctx.api._retrieve import get_source, outline
@@ -325,3 +326,58 @@ def outline_multi(
         ),
         "roots_tried": _root_labels(roots, anchor),
     }
+
+
+def find_literal_multi(
+    literal: str,
+    roots: list[Path],
+    *,
+    in_path: str | None = None,
+    kind: str | None = None,
+    with_bodies: bool = False,
+    body_char_cap: int = 1500,
+    max_results: int = 500,
+    anchor: Path | None = None,
+) -> dict:
+    """Run ``find_literal`` on each root in parallel and union the matches.
+
+    Match order: per-root sort (file, line) is preserved within each root,
+    and roots are concatenated in the input order so output stays
+    deterministic. The combined ``max_results`` cap applies after the
+    union; truncated state is propagated.
+    """
+    from snapctx.roots import root_label
+
+    if not roots:
+        return {"literal": literal, "matches": [], "match_count": 0, "truncated": False}
+
+    ok, errors = _fan_out(
+        lambda r: find_literal(
+            literal, root=r, in_path=in_path, kind=kind,
+            with_bodies=with_bodies, body_char_cap=body_char_cap,
+            max_results=max_results,
+        ),
+        roots, anchor=anchor,
+    )
+
+    merged: list[dict] = []
+    any_truncated = False
+    for r, res in ok:
+        if res.get("truncated"):
+            any_truncated = True
+        merged.extend(_tag_items(res.get("matches", []), root_label(r, anchor)))
+
+    truncated_total = len(merged) > max_results
+    if truncated_total:
+        merged = merged[:max_results]
+
+    payload: dict = {
+        "literal": literal,
+        "roots": _root_labels(roots, anchor),
+        "matches": merged,
+        "match_count": len(merged),
+        "truncated": any_truncated or truncated_total,
+    }
+    if errors:
+        payload["root_errors"] = errors
+    return payload

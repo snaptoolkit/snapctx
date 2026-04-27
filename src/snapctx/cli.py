@@ -24,6 +24,8 @@ from snapctx.api import (
     context_multi,
     expand,
     expand_multi,
+    find_literal,
+    find_literal_multi,
     get_source,
     get_source_multi,
     index_root,
@@ -99,6 +101,11 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
                      "query", "k_seeds", "source_for_top",
                      "file_outline_limit", "outline_discovery_k",
                      "mode", "kind",
+                 )),
+    QueryCommand("find", find_literal, find_literal_multi,
+                 arg_names=(
+                     "literal", "in_path", "kind",
+                     "with_bodies", "max_results",
                  )),
 )
 _QUERY_BY_NAME: dict[str, QueryCommand] = {c.name: c for c in _QUERY_COMMANDS}
@@ -312,6 +319,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p_context.add_argument("--kind", default=None)
     p_context.add_argument("--root", default=".")
     _add_vendor_args(p_context)
+
+    p_find = sub.add_parser(
+        "find",
+        help="Exhaustive literal-substring search over indexed symbol bodies.",
+    )
+    p_find.add_argument("literal")
+    p_find.add_argument(
+        "--in", dest="in_path", default=None, metavar="PATH",
+        help="Restrict the scan to symbols under this path prefix.",
+    )
+    p_find.add_argument("--kind", default=None)
+    p_find.add_argument(
+        "--with-bodies", dest="with_bodies", action="store_true",
+        help="Inline each match's enclosing-symbol source body.",
+    )
+    p_find.add_argument(
+        "--max-results", dest="max_results", type=int, default=500,
+    )
+    p_find.add_argument("--root", default=".")
+    _add_vendor_args(p_find)
 
     p_vendor = sub.add_parser(
         "vendor",

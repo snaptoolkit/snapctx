@@ -25,6 +25,7 @@ from pathlib import Path
 from snapctx.api import (
     context,
     expand,
+    find_literal,
     get_source,
     index_root,
     outline,
@@ -37,6 +38,7 @@ _OPS = {
     "expand":   expand,
     "outline":  outline,
     "source":   get_source,
+    "find":     find_literal,
 }
 
 

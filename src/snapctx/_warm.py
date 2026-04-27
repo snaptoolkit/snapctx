@@ -73,6 +73,13 @@ def _build_parser() -> argparse.ArgumentParser:
     pso.add_argument("qname")
     pso.add_argument("--with-neighbors", action="store_true")
 
+    pf = sub.add_parser("find")
+    pf.add_argument("literal")
+    pf.add_argument("--in", dest="in_path", default=None)
+    pf.add_argument("--kind", default=None)
+    pf.add_argument("--with-bodies", dest="with_bodies", action="store_true")
+    pf.add_argument("--max-results", dest="max_results", type=int, default=500)
+
     return p
 
 
@@ -97,6 +104,10 @@ _OP_FOR = {
     }),
     "source": ("source", lambda a: {
         "qname": a.qname, "with_neighbors": a.with_neighbors,
+    }),
+    "find": ("find", lambda a: {
+        "literal": a.literal, "in_path": a.in_path, "kind": a.kind,
+        "with_bodies": a.with_bodies, "max_results": a.max_results,
     }),
 }
 
