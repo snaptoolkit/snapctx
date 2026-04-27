@@ -91,6 +91,20 @@ Here's real output from running that query against the `requests` library (~370 
 
 ---
 
+## Benchmark: grep+read vs snapctx (tool output only, no agent reasoning)
+
+Controlled minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watch`). Bytes = actual data returned by tools.
+
+| Query | Type | Calls (grep → snapctx) | Speed | Data |
+|---|---|---|---|---|
+| Search pipeline end-to-end | survey | 6 → 1 (**6× fewer**) | 34 ms → 6 ms (**6× faster**) | 55 kB → 26 kB (**2× less**) |
+| Every SQLite connection open | audit | 4 → 2 (**2× fewer**) | 51 ms → 6 ms (**8× faster**) | — |
+| Multi-root discovery logic | architecture | 3 → 1 (**3× fewer**) | 16 ms → 5 ms (**3× faster**) | — |
+
+The data column is omitted where grep wins on raw bytes (audit/architecture) — those cases snapctx returns more bytes but with richer structure: qname, call-graph depth, file outlines. These are minimum grep counts; real agents make more exploratory calls, widening the gap.
+
+---
+
 ## The commands
 
 You'll mostly use **`context`**. The others let you drill in when `context` isn't enough; **`find`** is the right tool when you need exhaustive grep-style coverage instead of ranked top-K.
