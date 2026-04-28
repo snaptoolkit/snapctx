@@ -6,7 +6,21 @@
 
 *snapctx = **snap** **c**on**t**e**x**t — a snapshot of the context an agent needs.*
 
-**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings. **6× fewer tool calls. 8× faster. 2× fewer tokens on survey queries. Up to 16× fewer calls in realistic agent usage.** Measured against minimum-grep on this codebase — [see the full numbers](#tool-benchmark).
+**Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings.
+
+**Real-world agent usage (vs. default `grep`/`read`/`glob` tools):**
+
+| | Regular tools | snapctx | Win |
+|---|---|---|---|
+| Tool calls per query | 6–10 | **1** | ~10× fewer |
+| Wall-clock time | 15–30 s | **2–5 s** | ~10× faster |
+| Tokens per query | ~70 k | **~7 k** | ~10× fewer |
+| Token range | 40 k – 120 k | **6 k – 10 k** | ~10× fewer |
+| Lines processed | ~5,800 | **~1,500** | ~4× fewer |
+| Files accessed | 6 full reads | **4 ranked symbols** | targeted |
+| Query mode | sequential | **parallel** | concurrent fan-out |
+
+[See the controlled benchmark](#tool-benchmark) for per-query breakdowns.
 
 Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The parser layer is pluggable — adding a language is a single new file.
 
@@ -93,7 +107,48 @@ Here's real output from running that query against the `requests` library (~370 
 
 ## Tool benchmark
 
-Controlled minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watch`). Tokens estimated at 4 chars/token from actual bytes returned by tools — no agent reasoning included.
+### Real-world agent usage
+
+Aggregate over a session of agent-driven queries on a real backend
+(opencode + Llama / Gemma, navigating an unfamiliar Django repo with
+`snapctx_*` tools wired in alongside the defaults):
+
+| Metric | Regular tools | snapctx | Factor |
+|---|---|---|---|
+| Tool calls per query | 6–10 | 1 | ~10× fewer |
+| Round trips | 6–10 | 1 | ~10× fewer |
+| Wall-clock time | 15–30 s | 2–5 s | ~10× faster |
+| Tokens per query | ~70 k | ~7 k | ~10× fewer |
+| Token range | 40 k – 120 k | 6 k – 10 k | ~10× fewer |
+| Lines processed | ~5,800 | ~1,500 | ~4× fewer |
+| Files accessed | 6 full files | 4 ranked symbols | 33% fewer, targeted |
+| Query mode | sequential | parallel | concurrent fan-out |
+
+Numbers rounded; full traces gathered across `context`, `search`,
+`source`, and `expand` calls vs. the model's default
+`grep`/`read`/`glob` loop.
+
+### Refactoring
+
+Same setup, but for write-side tasks (find usages, rename, update
+imports). snapctx's symbol-aware writers (`edit_symbol`,
+`edit_batch`, `rename_symbol`, `add_import`/`remove_import`,
+`move_file`) make the agent's loop both shorter and safer:
+
+| Metric | Regular tools | snapctx | Factor |
+|---|---|---|---|
+| Calls to understand the code | 15–20 | 4–5 | 3–4× fewer |
+| Refactor wall-clock time | 60–120 s | 15–30 s | 4–8× faster |
+| Refactor tokens | ~45 k | ~8 k | ~6× fewer |
+| Find all usages | multiple `grep` passes | `snapctx_expand` | complete in one call |
+| Rename symbol | manual multi-file edits | `snapctx_rename_symbol` | atomic across def + callers + imports |
+| Update imports after move | manual | coordinated via `move_file` + `add_import`/`remove_import` | automatic |
+| Risk of missed sites | high (regex / line-by-line) | low (call-graph + qname routing) | comprehensive |
+| Confidence | medium | high (syntax pre-flight + per-file atomicity) | refuses to land broken edits |
+
+### Controlled microbenchmark
+
+Minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watch`). Tokens estimated at 4 chars/token from actual bytes returned by tools — no agent reasoning included.
 
 | Query | Type | Calls (grep → snapctx) | Speed | Tokens (grep → snapctx) | Token content |
 |---|---|---|---|---|---|
