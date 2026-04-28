@@ -21,7 +21,6 @@ from pathlib import Path
 from snapctx.api._common import open_index, resolve_qname
 from snapctx.index import sha_bytes
 
-
 # Suffixes for which we run a Python AST parse on the candidate file
 # before writing.
 _PYTHON_SUFFIXES = (".py", ".pyi")
@@ -31,6 +30,138 @@ _PYTHON_SUFFIXES = (".py", ".pyi")
 # always returns a tree — but it does flag truly broken syntax via
 # ``Node.has_error``.
 _TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".jsx", ".js", ".mjs", ".cjs")
+
+
+def delete_symbol(
+    qname: str,
+    root: str | Path = ".",
+    scope: str | None = None,
+) -> dict:
+    """Remove a symbol from its file (deletes the line range).
+
+    Mirror of ``edit_symbol`` for the "drop this entirely" case.
+    Trims one leading blank line if present so we don't leave a
+    double-blank gap between the prior and following symbols.
+    Same staleness + syntax pre-flight as ``edit_symbol``.
+
+    Returns ``{"qname", "file", "lines_deleted", "reindex"}`` or
+    a structured error.
+    """
+    if scope is not None:
+        return {
+            "qname": qname,
+            "error": "scope_unsupported",
+            "hint": "delete_symbol does not support vendor scopes.",
+        }
+    root_path = Path(root).resolve()
+    idx = open_index(root_path, scope=None)
+    try:
+        canonical, paraphrase_hint = resolve_qname(idx, qname)
+        if canonical is None:
+            return {
+                "qname": qname,
+                "error": "not_found",
+                "hint": f"No symbol {qname!r} in index.",
+            }
+        row = idx.get_symbol(canonical)
+        path = Path(row["file"])
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            return {"qname": canonical, "error": "read_failed", "hint": str(e)}
+        if idx.current_sha(str(path)) != sha_bytes(data):
+            return {
+                "qname": canonical,
+                "error": "stale_coordinates",
+                "hint": (
+                    f"File {str(path)!r} has changed since the last index. "
+                    "Re-query and retry."
+                ),
+            }
+
+        text = data.decode("utf-8", errors="replace")
+        had_trailing_nl = text.endswith("\n")
+        lines = text.split("\n")
+        if had_trailing_nl:
+            lines.pop()
+
+        ls, le = row["line_start"], row["line_end"]
+        if ls < 1 or le > len(lines) or ls > le:
+            return {
+                "qname": canonical,
+                "error": "stale_coordinates",
+                "hint": (
+                    f"Stored line range {ls}-{le} is outside the file "
+                    f"(now {len(lines)} lines)."
+                ),
+            }
+
+        # Drop one leading blank line if present, so we don't end up
+        # with a double-blank gap. (PEP-8 spacing has 2 blank lines
+        # *between* top-level fns; removing a fn should leave 2, not 3.)
+        delete_from = ls - 1
+        delete_to = le  # exclusive in slice terms
+        if delete_from > 0 and lines[delete_from - 1].strip() == "":
+            delete_from -= 1
+
+        new_lines = lines[:delete_from] + lines[delete_to:]
+        new_text = "\n".join(new_lines)
+        if had_trailing_nl:
+            new_text += "\n"
+
+        # Syntax pre-flight on the file post-deletion.
+        if path.suffix in _PYTHON_SUFFIXES:
+            try:
+                ast.parse(new_text)
+            except SyntaxError as e:
+                return {
+                    "qname": canonical,
+                    "error": "syntax_error",
+                    "hint": (
+                        f"Deleting {canonical!r} would make {path.name!r} "
+                        f"unparseable: {e.msg} at line {e.lineno}, col "
+                        f"{e.offset}. Nothing written."
+                    ),
+                }
+        elif path.suffix in _TS_SUFFIXES:
+            from snapctx.parsers.typescript import find_syntax_error
+            err = find_syntax_error(new_text, path.suffix)
+            if err is not None:
+                line, col = err
+                return {
+                    "qname": canonical,
+                    "error": "syntax_error",
+                    "hint": (
+                        f"Deleting {canonical!r} would make {path.name!r} "
+                        f"unparseable (tree-sitter at line {line}, col {col})."
+                    ),
+                }
+
+        try:
+            path.write_text(new_text, encoding="utf-8")
+        except OSError as e:
+            return {"qname": canonical, "error": "write_failed", "hint": str(e)}
+
+        result: dict = {
+            "qname": canonical,
+            "file": str(path),
+            "lines_deleted": delete_to - delete_from,
+            "deleted_range": f"{delete_from + 1}-{delete_to}",
+        }
+        if paraphrase_hint is not None:
+            result["paraphrase_hint"] = (
+                f"Resolved {qname!r} → {canonical!r} ({paraphrase_hint})."
+            )
+    finally:
+        idx.close()
+
+    from snapctx.api._indexer import index_root
+    refresh = index_root(root_path)
+    result["reindex"] = {
+        "files_updated": refresh["files_updated"],
+        "files_removed": refresh["files_removed"],
+    }
+    return result
 
 
 def edit_symbol(
