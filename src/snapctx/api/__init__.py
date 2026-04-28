@@ -7,19 +7,23 @@ importing from ``snapctx.api`` regardless of the internal layout.
 
 Stable surface — anything imported here is expected to keep working:
 
-* Operations: ``search_code``, ``expand``, ``outline``, ``get_source``,
-  ``context``, ``index_root``.
-* Multi-root variants: ``search_code_multi``, ``expand_multi``,
-  ``outline_multi``, ``get_source_multi``, ``context_multi``.
+* Read operations: ``search_code``, ``expand``, ``outline``,
+  ``get_source``, ``find_literal``, ``map_repo``, ``context``.
+* Write operations: ``edit_symbol`` (replaces a symbol body by qname).
+* Indexing: ``index_root``.
+* Multi-root variants: ``*_multi`` for each operation that supports
+  fan-out / route-by-qname.
 """
 
 from snapctx.api._context import context
+from snapctx.api._edit import edit_symbol
 from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
 from snapctx.api._indexer import index_root
 from snapctx.api._map import map_repo
 from snapctx.api._multi import (
     context_multi,
+    edit_symbol_multi,
     expand_multi,
     find_literal_multi,
     get_source_multi,
@@ -38,6 +42,8 @@ from snapctx.api._ranking import classify_query as _classify_query  # noqa: F401
 __all__ = [
     "context",
     "context_multi",
+    "edit_symbol",
+    "edit_symbol_multi",
     "expand",
     "expand_multi",
     "find_literal",

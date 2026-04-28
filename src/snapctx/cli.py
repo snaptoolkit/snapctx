@@ -22,6 +22,8 @@ from typing import Callable
 from snapctx.api import (
     context,
     context_multi,
+    edit_symbol,
+    edit_symbol_multi,
     expand,
     expand_multi,
     find_literal,
@@ -390,6 +392,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_roots.add_argument("root", nargs="?", default=".", help="Start path (default: cwd)")
 
+    p_edit = sub.add_parser(
+        "edit",
+        help=(
+            "Replace a symbol's body by qname. New body is read from a "
+            "file (positional) or stdin (--stdin)."
+        ),
+    )
+    p_edit.add_argument("qname", help="Fully qualified symbol name to replace.")
+    p_edit.add_argument(
+        "body_file", nargs="?", default=None,
+        help="Path to a file containing the new body. Mutually exclusive with --stdin.",
+    )
+    p_edit.add_argument(
+        "--stdin", action="store_true",
+        help="Read the new body from standard input instead of a file.",
+    )
+    p_edit.add_argument("--root", default=".")
+
     return parser
 
 
@@ -416,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "vendor":
         return _vendor_dispatch(args)
 
-    # Query commands: discover, resolve scope, ensure relevant index is fresh, dispatch.
+    # Query / edit commands: discover, resolve scope, refresh, dispatch.
     roots, anchor = _resolve_roots(args.root)
     if not roots:
         roots = _bootstrap_first_index(anchor)
@@ -428,9 +448,16 @@ def main(argv: list[str] | None = None) -> int:
     # index isn't being queried and SHA-skipping its 300+ files is pure
     # waste (~750 ms on a real project). Vendor packages are
     # built-once-and-forget — no per-call refresh needed.
-    _resolve_query_scope(roots, args)
+    if args.cmd != "edit":
+        _resolve_query_scope(roots, args)
+    else:
+        # Vendor scope is a read-only concept; edit refuses it via the API.
+        args.scope = None
     if args.scope is None:
         _refresh_indexes(roots)
+
+    if args.cmd == "edit":
+        return _edit_dispatch(args, roots, anchor)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
@@ -439,6 +466,37 @@ def main(argv: list[str] | None = None) -> int:
 
     print(json.dumps(cmd.call(args, roots, anchor), indent=2))
     return 0
+
+
+def _edit_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) -> int:
+    """Read new body from file or stdin, dispatch edit_symbol.
+
+    Refresh has already happened upstream so the index reflects the
+    current file SHA before the staleness check runs.
+    """
+    if args.stdin and args.body_file:
+        sys.stderr.write("snapctx: pass either body_file or --stdin, not both.\n")
+        return 2
+    if args.stdin:
+        new_body = sys.stdin.read()
+    elif args.body_file:
+        try:
+            new_body = Path(args.body_file).read_text(encoding="utf-8")
+        except OSError as e:
+            sys.stderr.write(f"snapctx: cannot read body_file: {e}\n")
+            return 2
+    else:
+        sys.stderr.write(
+            "snapctx: edit needs a body — pass a file path or --stdin.\n"
+        )
+        return 2
+
+    if len(roots) > 1:
+        result = edit_symbol_multi(args.qname, new_body, roots=roots, anchor=anchor)
+    else:
+        result = edit_symbol(args.qname, new_body, root=roots[0])
+    print(json.dumps(result, indent=2))
+    return 0 if "error" not in result else 1
 
 
 def _resolve_query_scope(roots: list[Path], args: argparse.Namespace) -> None:

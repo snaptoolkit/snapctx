@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from snapctx.api._context import context
+from snapctx.api._edit import edit_symbol
 from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
 from snapctx.api._map import map_repo
@@ -275,6 +276,25 @@ def get_source_multi(
         qname, roots,
         lambda r: get_source(qname, with_neighbors=with_neighbors, root=r),
         not_found_hint=f"No symbol {qname!r} in any indexed root.",
+        anchor=anchor,
+    )
+
+
+def edit_symbol_multi(
+    qname: str,
+    new_body: str,
+    roots: list[Path],
+    *,
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``edit_symbol`` to whichever root owns ``qname``."""
+    return _route_qname(
+        qname, roots,
+        lambda r: edit_symbol(qname, new_body, root=r),
+        not_found_hint=(
+            f"No symbol {qname!r} in any indexed root. "
+            "Run search first to find a valid qname."
+        ),
         anchor=anchor,
     )
 

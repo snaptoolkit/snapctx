@@ -118,6 +118,7 @@ You'll mostly use **`context`**. The others let you drill in when `context` isn'
 | `snapctx outline path/` | Symbol tree of a file or directory (functions / classes / constants, nested). Add `--with-bodies` to inline source for every symbol. | Cheaper than reading whole files; directory mode gives you a module map. |
 | `snapctx source <qname>` | Full body of a single symbol. Add `--with-neighbors` for resolved callee signatures. | When you have an exact qname and want its source. |
 | `snapctx expand <qname>` | Walk the call graph. `--direction callees \| callers \| both`, `--depth 1 \| 2`. | "Who calls this?" / "What does this depend on?" |
+| `snapctx edit <qname> <body_file>` | **Write op**. Replace a symbol's body by qname (re-indexes the file before returning). `--stdin` reads the body from stdin instead of a file. Refuses if the file's SHA has drifted since indexing — the caller must re-query for fresh coordinates. | Editing a function or class without re-reading the whole file. Pair with `source` (to see what's there) → write the replacement → `edit`. |
 
 The query can be:
 - **Natural language**: `"how does rate limiting work"`, `"where do we verify credentials"`
