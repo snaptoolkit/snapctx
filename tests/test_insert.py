@@ -99,6 +99,19 @@ def test_insert_invalid_position(tmp_path: Path) -> None:
     assert result["error"] == "invalid_position"
 
 
+def test_insert_refuses_python_syntax_error(tmp_path: Path) -> None:
+    repo = _build_repo(tmp_path)
+    bad = "\n\ndef bad(a:\n    return a\n"  # truncated annotation
+    result = insert_symbol("pkg.math:add", bad, root=repo)
+    assert result["error"] == "syntax_error"
+    assert "unparseable" in result["hint"]
+    # File still parses, original symbols intact.
+    src = (repo / "pkg" / "math.py").read_text()
+    import ast as _ast
+    _ast.parse(src)
+    assert "def bad" not in src
+
+
 def test_insert_then_subsequent_edit_resolves(tmp_path: Path) -> None:
     """After inserting, the next op (edit on a sibling) must still find
     the right line range — exercises the in-process re-index."""

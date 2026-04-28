@@ -23,11 +23,14 @@ Caller's job:
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import Literal
 
 from snapctx.api._common import open_index, resolve_qname
 from snapctx.index import sha_bytes
+
+_PYTHON_SUFFIXES = (".py", ".pyi")
 
 
 def insert_symbol(
@@ -121,6 +124,21 @@ def insert_symbol(
         new_file_text = "\n".join(out)
         if had_trailing_nl:
             new_file_text += "\n"
+
+        # Syntax pre-flight for Python — refuse to write a broken file.
+        if path.suffix in _PYTHON_SUFFIXES:
+            try:
+                ast.parse(new_file_text)
+            except SyntaxError as e:
+                return {
+                    "anchor": canonical,
+                    "error": "syntax_error",
+                    "hint": (
+                        f"Proposed insert would make {path.name!r} unparseable: "
+                        f"{e.msg} at line {e.lineno}, col {e.offset}. "
+                        "Fix the new_text and retry; nothing was written."
+                    ),
+                }
 
         try:
             path.write_text(new_file_text, encoding="utf-8")

@@ -109,6 +109,27 @@ def test_edit_rejects_vendor_scope(tmp_path: Path) -> None:
     assert result["error"] == "scope_unsupported"
 
 
+def test_edit_refuses_python_syntax_error(tmp_path: Path) -> None:
+    repo = _build_repo(tmp_path)
+    bad = "def add(a, b\n    return a + b\n"  # missing close paren on def line
+    result = edit_symbol("pkg.math:add", bad, root=repo)
+    assert result["error"] == "syntax_error"
+    assert "unparseable" in result["hint"]
+    # Original file untouched.
+    assert "def add(a, b):" in (repo / "pkg" / "math.py").read_text()
+
+
+def test_edit_refuses_when_indent_breaks_module(tmp_path: Path) -> None:
+    """Even if the new body itself parses standalone, it must not break
+    the surrounding file. Here we accidentally drop the leading ``def``
+    line — leaving an orphan ``return`` at module level."""
+    repo = _build_repo(tmp_path)
+    orphan = "    return a + b\n"
+    result = edit_symbol("pkg.math:add", orphan, root=repo)
+    assert result["error"] == "syntax_error"
+    assert "def add" in (repo / "pkg" / "math.py").read_text()
+
+
 def test_edit_then_source_reflects_new_line_range(tmp_path: Path) -> None:
     """A longer body shifts subsequent symbols' line ranges; the
     reindex inside ``edit_symbol`` must pick that up so a follow-up

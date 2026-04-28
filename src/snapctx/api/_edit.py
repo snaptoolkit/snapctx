@@ -15,10 +15,17 @@ Re-indexes the modified file before returning, so a follow-up
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from snapctx.api._common import open_index, resolve_qname
 from snapctx.index import sha_bytes
+
+
+# Suffixes for which we run a Python AST parse on the candidate file
+# before writing. Other languages skip the check (TS via tree-sitter
+# is permissive; we'd rather not pull in a TS parser at write time).
+_PYTHON_SUFFIXES = (".py", ".pyi")
 
 
 def edit_symbol(
@@ -125,6 +132,24 @@ def edit_symbol(
         new_text = "\n".join(new_lines)
         if had_trailing_nl:
             new_text += "\n"
+
+        # Syntax pre-flight for Python files: refuse to write a file
+        # that won't parse. Without this, a bad replacement (mismatched
+        # indent, dangling colon, accidental f-string) silently breaks
+        # the file and the next query goes to a corrupted index.
+        if path.suffix in _PYTHON_SUFFIXES:
+            try:
+                ast.parse(new_text)
+            except SyntaxError as e:
+                return {
+                    "qname": canonical,
+                    "error": "syntax_error",
+                    "hint": (
+                        f"Proposed edit would make {path.name!r} unparseable: "
+                        f"{e.msg} at line {e.lineno}, col {e.offset}. "
+                        "Fix the new_body and retry; nothing was written."
+                    ),
+                }
 
         try:
             path.write_text(new_text, encoding="utf-8")
