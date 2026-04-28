@@ -93,6 +93,53 @@ def test_add_import_fresh_file_no_existing_imports(tmp_path: Path) -> None:
     assert text.startswith("import os\n")
 
 
+def test_add_import_lands_after_leading_module_docstring(tmp_path: Path) -> None:
+    """For a Python file whose first thing is a module docstring,
+    a new import lands AFTER the docstring, not above it."""
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "__init__.py").write_text("")
+    (repo / "pkg" / "docfirst.py").write_text(
+        '"""Module docstring."""\n'
+        "\n"
+        "def x(): return 1\n"
+    )
+    index_root(repo)
+
+    result = add_import("pkg/docfirst.py", "import os", root=repo)
+    assert "error" not in result, result
+    text = (repo / "pkg" / "docfirst.py").read_text()
+    assert text.startswith('"""Module docstring."""')
+    # Docstring still on line 1, import lands after it.
+    assert text.split("\n")[0] == '"""Module docstring."""'
+    pos_doc = text.find('"""Module docstring."""')
+    pos_import = text.find("import os")
+    assert pos_doc < pos_import
+
+
+def test_add_import_lands_after_multiline_docstring(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "__init__.py").write_text("")
+    (repo / "pkg" / "doc_multi.py").write_text(
+        '"""First line.\n\n'
+        "More body.\n"
+        'End.\n"""\n'
+        "\n"
+        "def x(): return 1\n"
+    )
+    index_root(repo)
+
+    result = add_import("pkg/doc_multi.py", "import os", root=repo)
+    assert "error" not in result, result
+    text = (repo / "pkg" / "doc_multi.py").read_text()
+    assert text.startswith('"""First line.')
+    # Import comes AFTER the closing """.
+    pos_close = text.find('End.\n"""')
+    pos_import = text.find("import os")
+    assert 0 < pos_close < pos_import
+
+
 def test_add_import_refuses_when_file_changed(tmp_path: Path) -> None:
     repo = _build_repo(tmp_path)
     target = repo / "pkg" / "math.py"

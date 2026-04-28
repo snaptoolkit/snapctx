@@ -5,6 +5,34 @@ from pathlib import Path
 from snapctx.parsers.python import PythonParser
 
 
+def test_typing_overload_stubs_are_skipped(tmp_path: Path) -> None:
+    """@t.overload / @typing.overload / @overload stubs share a qname
+    with the real implementation. The parser must skip the stubs so
+    the real impl wins the qname."""
+    src = tmp_path / "pkg"
+    src.mkdir()
+    (src / "__init__.py").write_text("")
+    (src / "mod.py").write_text(
+        "import typing as t\n"
+        "\n"
+        "@t.overload\n"
+        "def get(silent: t.Literal[False] = False) -> int: ...\n"
+        "\n"
+        "@t.overload\n"
+        "def get(silent: bool = ...) -> int | None: ...\n"
+        "\n"
+        "def get(silent: bool = False) -> int | None:\n"
+        '    """Real impl."""\n'
+        "    return 42\n"
+    )
+
+    result = PythonParser().parse(src / "mod.py", tmp_path)
+    fns = [s for s in result.symbols if s.qname == "pkg.mod:get"]
+    assert len(fns) == 1, f"expected one ``get`` symbol, got {len(fns)}: {[s.line_start for s in fns]}"
+    # The surviving symbol must be the REAL implementation, not a stub.
+    assert fns[0].docstring == "Real impl."
+
+
 def test_extracts_symbols_with_correct_qnames(tmp_path: Path) -> None:
     src = tmp_path / "pkg"
     src.mkdir()

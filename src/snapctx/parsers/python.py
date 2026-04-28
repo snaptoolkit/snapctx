@@ -249,21 +249,28 @@ class _Visitor(ast.NodeVisitor):
         signature = self._function_signature(node, is_async=is_async)
         docstring = ast.get_docstring(node, clean=True)
         decorators = [_render_decorator(d) for d in node.decorator_list]
-        self.symbols.append(
-            Symbol(
-                qname=qname,
-                kind=kind,
-                language="python",
-                signature=signature,
-                docstring=docstring,
-                file=self.file,
-                line_start=node.lineno,
-                line_end=_end_line(node),
-                parent_qname=parent_qname,
-                decorators=decorators,
-                source_sha=_sha_of_lines(self.source_lines, node.lineno, _end_line(node)),
+        # Skip ``@typing.overload`` / ``@t.overload`` / ``@overload`` stubs.
+        # These share a qname with the real implementation that follows
+        # them; emitting them would shadow the impl in our qname-keyed
+        # index (the FIRST occurrence wins on dedupe), and edits via
+        # the qname would land on the stub instead of the real impl.
+        # Bare ``...`` bodies aren't useful to navigate to anyway.
+        if not _is_overload_stub(decorators):
+            self.symbols.append(
+                Symbol(
+                    qname=qname,
+                    kind=kind,
+                    language="python",
+                    signature=signature,
+                    docstring=docstring,
+                    file=self.file,
+                    line_start=node.lineno,
+                    line_end=_end_line(node),
+                    parent_qname=parent_qname,
+                    decorators=decorators,
+                    source_sha=_sha_of_lines(self.source_lines, node.lineno, _end_line(node)),
+                )
             )
-        )
         self._stack.append(node.name)
         prev = self._current_fn_qname
         # Decorators, default values, and type annotations all evaluate at
@@ -430,6 +437,24 @@ def _render_decorator(node: ast.AST) -> str:
         return "@" + ast.unparse(node)
     except Exception:
         return "@<?>"
+
+
+def _is_overload_stub(decorators: list[str]) -> bool:
+    """True if any decorator names ``typing.overload`` (or its aliases).
+
+    Matches ``@overload``, ``@typing.overload``, ``@t.overload``, and
+    aliased forms like ``@_typing.overload``. The match is on the
+    last segment plus an exact-name fallback to keep false positives
+    rare. We don't try to follow ``import typing as <alias>`` — at
+    parse time we don't have the import map, but the trailing-segment
+    rule covers every form actually used in practice.
+    """
+    for d in decorators:
+        # Strip leading "@" and any call-suffix args.
+        name = d.lstrip("@").split("(", 1)[0].strip()
+        if name == "overload" or name.endswith(".overload"):
+            return True
+    return False
 
 
 def _is_literal_like(node: ast.AST | None) -> bool:

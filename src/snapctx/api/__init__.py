@@ -25,6 +25,7 @@ from snapctx.api._imports import add_import, remove_import
 from snapctx.api._indexer import index_root
 from snapctx.api._insert import insert_symbol
 from snapctx.api._map import map_repo
+from snapctx.api._rename import rename_symbol
 from snapctx.api._multi import (
     context_multi,
     edit_symbol_multi,
@@ -69,6 +70,7 @@ __all__ = [
     "outline",
     "outline_multi",
     "remove_import",
+    "rename_symbol",
     "search_code",
     "search_code_multi",
 ]

@@ -54,6 +54,39 @@ def _import_block_lines(idx, abs_file: str) -> list[int]:
     return [r["line"] for r in rows]
 
 
+def _post_docstring_insert_index(path: Path, lines: list[str]) -> int:
+    """Pick the right insert index for a NEW import in a file with no imports.
+
+    For Python, prefer "right after a leading module docstring" so the
+    docstring stays at the top of the file (Python convention). For
+    everything else, top-of-file (index 0).
+
+    Returns a 0-based index — ``new_lines[idx]`` is where the new
+    import lands. Falls back to 0 on any parse error.
+    """
+    if path.suffix not in _PYTHON_SUFFIXES:
+        return 0
+    # Cheap shortcut: if the file is empty or doesn't start with a
+    # quote-like char, no docstring.
+    text_head = "\n".join(lines[:1]).lstrip()
+    if not text_head or text_head[0] not in ("'", '"'):
+        return 0
+    try:
+        tree = ast.parse("\n".join(lines))
+    except SyntaxError:
+        return 0
+    if not tree.body:
+        return 0
+    first = tree.body[0]
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+            and isinstance(first.value.value, str):
+        # ast.end_lineno is 1-based; we want a 0-based index pointing
+        # to the line AFTER the docstring.
+        end = first.value.end_lineno or first.value.lineno or 0
+        return end
+    return 0
+
+
 def _validate_syntax(path: Path, new_text: str) -> dict | None:
     """Return an error dict if the candidate file won't parse, else None."""
     if path.suffix in _PYTHON_SUFFIXES:
@@ -169,13 +202,12 @@ def add_import(
             # Append directly after the last existing import line.
             insert_idx = max(block_lines)  # 1-based last import line; insert AFTER
         else:
-            # No existing imports: place at the top of the file. For
-            # Python, this lands above any code; module docstrings
-            # technically belong above imports, so prefer "after a
-            # leading docstring if present" — but pinpointing that
-            # without a real parser pass is brittle. Top-of-file is
-            # fine for v1 and the syntax guard catches mistakes.
-            insert_idx = 0  # insert before line 1
+            # No existing imports: insert AFTER a leading module
+            # docstring if there is one (Python convention), else at
+            # the top of the file. For TS/JS we always pick top-of-file
+            # — there's no docstring concept and tree-sitter would
+            # accept either placement.
+            insert_idx = _post_docstring_insert_index(path, lines)
     finally:
         idx.close()
 
