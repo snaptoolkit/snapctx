@@ -17,6 +17,7 @@ Stable surface — anything imported here is expected to keep working:
 
 from snapctx.api._context import context
 from snapctx.api._edit import edit_symbol
+from snapctx.api._edit_batch import edit_symbol_batch
 from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
 from snapctx.api._indexer import index_root
@@ -45,6 +46,7 @@ __all__ = [
     "context",
     "context_multi",
     "edit_symbol",
+    "edit_symbol_batch",
     "edit_symbol_multi",
     "expand",
     "expand_multi",

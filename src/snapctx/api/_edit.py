@@ -23,9 +23,14 @@ from snapctx.index import sha_bytes
 
 
 # Suffixes for which we run a Python AST parse on the candidate file
-# before writing. Other languages skip the check (TS via tree-sitter
-# is permissive; we'd rather not pull in a TS parser at write time).
+# before writing.
 _PYTHON_SUFFIXES = (".py", ".pyi")
+
+# Suffixes for which we run a tree-sitter syntax check (looks for ERROR /
+# MISSING nodes in the parse tree). Tree-sitter is permissive — it
+# always returns a tree — but it does flag truly broken syntax via
+# ``Node.has_error``.
+_TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".jsx", ".js", ".mjs", ".cjs")
 
 
 def edit_symbol(
@@ -133,10 +138,10 @@ def edit_symbol(
         if had_trailing_nl:
             new_text += "\n"
 
-        # Syntax pre-flight for Python files: refuse to write a file
-        # that won't parse. Without this, a bad replacement (mismatched
-        # indent, dangling colon, accidental f-string) silently breaks
-        # the file and the next query goes to a corrupted index.
+        # Syntax pre-flight: refuse to write a file that won't parse.
+        # Without this, a bad replacement (mismatched indent, dangling
+        # colon, missing brace) silently breaks the file and the next
+        # query goes to a corrupted index.
         if path.suffix in _PYTHON_SUFFIXES:
             try:
                 ast.parse(new_text)
@@ -148,6 +153,21 @@ def edit_symbol(
                         f"Proposed edit would make {path.name!r} unparseable: "
                         f"{e.msg} at line {e.lineno}, col {e.offset}. "
                         "Fix the new_body and retry; nothing was written."
+                    ),
+                }
+        elif path.suffix in _TS_SUFFIXES:
+            from snapctx.parsers.typescript import find_syntax_error
+            err = find_syntax_error(new_text, path.suffix)
+            if err is not None:
+                line, col = err
+                return {
+                    "qname": canonical,
+                    "error": "syntax_error",
+                    "hint": (
+                        f"Proposed edit would make {path.name!r} unparseable "
+                        f"(tree-sitter reports an error at line {line}, "
+                        f"col {col}). Fix the new_body and retry; nothing "
+                        "was written."
                     ),
                 }
 

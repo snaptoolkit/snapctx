@@ -31,6 +31,7 @@ from snapctx.api._common import open_index, resolve_qname
 from snapctx.index import sha_bytes
 
 _PYTHON_SUFFIXES = (".py", ".pyi")
+_TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".jsx", ".js", ".mjs", ".cjs")
 
 
 def insert_symbol(
@@ -125,7 +126,7 @@ def insert_symbol(
         if had_trailing_nl:
             new_file_text += "\n"
 
-        # Syntax pre-flight for Python — refuse to write a broken file.
+        # Syntax pre-flight — refuse to write a broken file.
         if path.suffix in _PYTHON_SUFFIXES:
             try:
                 ast.parse(new_file_text)
@@ -137,6 +138,21 @@ def insert_symbol(
                         f"Proposed insert would make {path.name!r} unparseable: "
                         f"{e.msg} at line {e.lineno}, col {e.offset}. "
                         "Fix the new_text and retry; nothing was written."
+                    ),
+                }
+        elif path.suffix in _TS_SUFFIXES:
+            from snapctx.parsers.typescript import find_syntax_error
+            err = find_syntax_error(new_file_text, path.suffix)
+            if err is not None:
+                line, col = err
+                return {
+                    "anchor": canonical,
+                    "error": "syntax_error",
+                    "hint": (
+                        f"Proposed insert would make {path.name!r} unparseable "
+                        f"(tree-sitter reports an error at line {line}, "
+                        f"col {col}). Fix the new_text and retry; nothing "
+                        "was written."
                     ),
                 }
 

@@ -130,6 +130,50 @@ def test_edit_refuses_when_indent_breaks_module(tmp_path: Path) -> None:
     assert "def add" in (repo / "pkg" / "math.py").read_text()
 
 
+def _build_ts_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "ts_repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "utils.ts").write_text(
+        "export function add(a: number, b: number): number {\n"
+        "  return a + b;\n"
+        "}\n"
+        "\n"
+        "export function multiply(a: number, b: number): number {\n"
+        "  return a * b;\n"
+        "}\n"
+    )
+    index_root(repo)
+    return repo
+
+
+def test_edit_works_on_typescript(tmp_path: Path) -> None:
+    repo = _build_ts_repo(tmp_path)
+    new_body = (
+        "export function add(a: number, b: number): number {\n"
+        "  if (typeof a !== 'number' || typeof b !== 'number') {\n"
+        "    throw new TypeError('a and b must be numbers');\n"
+        "  }\n"
+        "  return a + b;\n"
+        "}\n"
+    )
+    result = edit_symbol("src/utils:add", new_body, root=repo)
+    assert "error" not in result, result
+    src = get_source("src/utils:add", root=repo)
+    assert "TypeError" in src["source"]
+
+
+def test_edit_refuses_typescript_syntax_error(tmp_path: Path) -> None:
+    repo = _build_ts_repo(tmp_path)
+    # Missing colon before return type — tsc would reject; tree-sitter flags it.
+    bad = "export function add(a: number, b: number) number {\n  return a + b;\n}\n"
+    result = edit_symbol("src/utils:add", bad, root=repo)
+    assert result["error"] == "syntax_error"
+    assert "tree-sitter" in result["hint"]
+    # File on disk untouched.
+    on_disk = (repo / "src" / "utils.ts").read_text()
+    assert "function add(a: number, b: number): number" in on_disk
+
+
 def test_edit_then_source_reflects_new_line_range(tmp_path: Path) -> None:
     """A longer body shifts subsequent symbols' line ranges; the
     reindex inside ``edit_symbol`` must pick that up so a follow-up

@@ -31,6 +31,37 @@ _TSX_LANG = Language(tree_sitter_typescript.language_tsx())
 _TSX_EXTENSIONS = (".tsx", ".jsx", ".js", ".mjs", ".cjs")
 
 
+def find_syntax_error(source: str, suffix: str) -> tuple[int, int] | None:
+    """Return the (line, col) of the first parse error, or ``None`` if clean.
+
+    Uses the same tree-sitter grammars the indexer uses. Tree-sitter is
+    permissive — it always returns *some* tree — so we look for the
+    presence of ERROR or MISSING nodes via ``Node.has_error`` and walk
+    to find the first one for a useful location.
+
+    Lines and columns are 1-based to match Python's ``ast.SyntaxError``.
+    """
+    lang = _TSX_LANG if suffix in _TSX_EXTENSIONS else _TS_LANG
+    tree = Parser(lang).parse(source.encode("utf-8", errors="replace"))
+    if not tree.root_node.has_error:
+        return None
+    # Walk to the first ERROR / MISSING node.
+    cursor = tree.walk()
+    while True:
+        node = cursor.node
+        if node.is_error or node.is_missing:
+            row, col = node.start_point
+            return (row + 1, col + 1)
+        if cursor.goto_first_child():
+            continue
+        while not cursor.goto_next_sibling():
+            if not cursor.goto_parent():
+                # No descendant ERROR found despite has_error — treat
+                # as a generic root-level error.
+                row, col = tree.root_node.start_point
+                return (row + 1, col + 1)
+
+
 class TypeScriptParser:
     language = "typescript"
     extensions = (".ts", ".tsx", ".mts", ".cts", ".jsx", ".js", ".mjs", ".cjs")
