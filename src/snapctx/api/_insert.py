@@ -1,0 +1,152 @@
+"""Insert a new top-level symbol relative to an existing one.
+
+``edit_symbol`` only replaces existing symbols — useful when you know
+*what* to change, useless when you need to *add* a brand-new function
+or class. ``insert_symbol`` fills that gap: pick an existing anchor
+qname, say "before" or "after", and the new text is spliced into the
+file at the anchor's line boundary.
+
+Same staleness guarantee as ``edit_symbol``: the file's SHA on disk
+must match the one recorded at index time, otherwise the line range
+of the anchor may have drifted and we refuse to splice.
+
+Caller's job:
+
+* The ``new_text`` is inserted as-is, including its leading and
+  trailing whitespace. Two blank lines on either side gets you
+  PEP-8 spacing for top-level functions.
+* The text is added at the line BEFORE the anchor's ``line_start``
+  (``position="before"``) or AFTER its ``line_end``
+  (``position="after"``, the default) — so it lands at the same
+  indentation as the anchor.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+from snapctx.api._common import open_index, resolve_qname
+from snapctx.index import sha_bytes
+
+
+def insert_symbol(
+    anchor_qname: str,
+    new_text: str,
+    root: str | Path = ".",
+    position: Literal["before", "after"] = "after",
+    scope: str | None = None,
+) -> dict:
+    """Insert ``new_text`` adjacent to ``anchor_qname`` in its file.
+
+    Returns ``{"anchor", "file", "anchor_lines", "inserted_at",
+    "lines_inserted", "reindex"}`` on success, or ``{"anchor",
+    "error", "hint"}`` on failure. Failure modes:
+
+    * ``not_found`` — anchor qname doesn't resolve.
+    * ``stale_coordinates`` — file changed since indexing.
+    * ``read_failed`` / ``write_failed`` — filesystem error.
+    * ``invalid_position`` — ``position`` not ``"before"`` or ``"after"``.
+    * ``scope_unsupported`` — vendor scopes are read-only.
+    """
+    if scope is not None:
+        return {
+            "anchor": anchor_qname,
+            "error": "scope_unsupported",
+            "hint": "insert_symbol does not support vendor scopes — vendored packages are read-only.",
+        }
+    if position not in ("before", "after"):
+        return {
+            "anchor": anchor_qname,
+            "error": "invalid_position",
+            "hint": f"position must be 'before' or 'after', got {position!r}.",
+        }
+
+    root_path = Path(root).resolve()
+    idx = open_index(root_path, scope=None)
+    try:
+        canonical, paraphrase_hint = resolve_qname(idx, anchor_qname)
+        if canonical is None:
+            return {
+                "anchor": anchor_qname,
+                "error": "not_found",
+                "hint": f"No symbol {anchor_qname!r} in index. Run search first.",
+            }
+        row = idx.get_symbol(canonical)
+        path = Path(row["file"])
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            return {"anchor": canonical, "error": "read_failed", "hint": str(e)}
+
+        if idx.current_sha(str(path)) != sha_bytes(data):
+            return {
+                "anchor": canonical,
+                "error": "stale_coordinates",
+                "hint": (
+                    f"File {str(path)!r} has changed since the last index. "
+                    "Re-query and retry."
+                ),
+            }
+
+        text = data.decode("utf-8", errors="replace")
+        had_trailing_nl = text.endswith("\n")
+        lines = text.split("\n")
+        if had_trailing_nl:
+            lines.pop()
+
+        ls, le = row["line_start"], row["line_end"]
+        if ls < 1 or le > len(lines) or ls > le:
+            return {
+                "anchor": canonical,
+                "error": "stale_coordinates",
+                "hint": (
+                    f"Stored line range {ls}-{le} is outside the file "
+                    f"(now {len(lines)} lines)."
+                ),
+            }
+
+        # Splice point: 0-based index where new lines should land.
+        if position == "before":
+            splice_at = ls - 1
+        else:
+            splice_at = le
+
+        new_lines = new_text.split("\n")
+        if new_lines and new_lines[-1] == "":
+            # Drop the trailing empty entry from a body that ends with "\n".
+            new_lines.pop()
+
+        out = lines[:splice_at] + new_lines + lines[splice_at:]
+        new_file_text = "\n".join(out)
+        if had_trailing_nl:
+            new_file_text += "\n"
+
+        try:
+            path.write_text(new_file_text, encoding="utf-8")
+        except OSError as e:
+            return {"anchor": canonical, "error": "write_failed", "hint": str(e)}
+
+        result: dict = {
+            "anchor": canonical,
+            "file": str(path),
+            "anchor_lines": f"{ls}-{le}",
+            "position": position,
+            "inserted_at": f"{splice_at + 1}-{splice_at + len(new_lines)}" if new_lines else f"{splice_at + 1}-{splice_at}",
+            "lines_inserted": len(new_lines),
+        }
+        if paraphrase_hint is not None:
+            result["paraphrase_hint"] = (
+                f"Resolved {anchor_qname!r} → {canonical!r} ({paraphrase_hint})."
+            )
+    finally:
+        idx.close()
+
+    from snapctx.api._indexer import index_root
+
+    refresh = index_root(root_path)
+    result["reindex"] = {
+        "files_updated": refresh["files_updated"],
+        "files_removed": refresh["files_removed"],
+    }
+    return result

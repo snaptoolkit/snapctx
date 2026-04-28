@@ -28,6 +28,7 @@ from snapctx.api._context import context
 from snapctx.api._edit import edit_symbol
 from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
+from snapctx.api._insert import insert_symbol
 from snapctx.api._map import map_repo
 from snapctx.api._ranking import search_hint
 from snapctx.api._retrieve import get_source, outline
@@ -294,6 +295,26 @@ def edit_symbol_multi(
         not_found_hint=(
             f"No symbol {qname!r} in any indexed root. "
             "Run search first to find a valid qname."
+        ),
+        anchor=anchor,
+    )
+
+
+def insert_symbol_multi(
+    anchor_qname: str,
+    new_text: str,
+    roots: list[Path],
+    *,
+    position: str = "after",
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``insert_symbol`` to whichever root owns ``anchor_qname``."""
+    return _route_qname(
+        anchor_qname, roots,
+        lambda r: insert_symbol(anchor_qname, new_text, root=r, position=position),
+        not_found_hint=(
+            f"No symbol {anchor_qname!r} in any indexed root. "
+            "Run search first to find an anchor qname in the right file."
         ),
         anchor=anchor,
     )

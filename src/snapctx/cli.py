@@ -31,6 +31,8 @@ from snapctx.api import (
     get_source,
     get_source_multi,
     index_root,
+    insert_symbol,
+    insert_symbol_multi,
     map_repo,
     map_repo_multi,
     outline,
@@ -410,6 +412,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_edit.add_argument("--root", default=".")
 
+    p_insert = sub.add_parser(
+        "insert",
+        help=(
+            "Insert a new top-level symbol adjacent to an anchor symbol. "
+            "Body read from file or stdin."
+        ),
+    )
+    p_insert.add_argument(
+        "anchor_qname",
+        help="Existing symbol to anchor against (insert before/after it).",
+    )
+    p_insert.add_argument(
+        "body_file", nargs="?", default=None,
+        help="Path to a file containing the new symbol's text.",
+    )
+    p_insert.add_argument(
+        "--stdin", action="store_true",
+        help="Read the new text from stdin instead of a file.",
+    )
+    p_insert.add_argument(
+        "--position", choices=("before", "after"), default="after",
+        help="Insert before or after the anchor symbol (default: after).",
+    )
+    p_insert.add_argument("--root", default=".")
+
     return parser
 
 
@@ -448,16 +475,18 @@ def main(argv: list[str] | None = None) -> int:
     # index isn't being queried and SHA-skipping its 300+ files is pure
     # waste (~750 ms on a real project). Vendor packages are
     # built-once-and-forget — no per-call refresh needed.
-    if args.cmd != "edit":
+    if args.cmd not in ("edit", "insert"):
         _resolve_query_scope(roots, args)
     else:
-        # Vendor scope is a read-only concept; edit refuses it via the API.
+        # Vendor scope is a read-only concept; write ops refuse it via the API.
         args.scope = None
     if args.scope is None:
         _refresh_indexes(roots)
 
     if args.cmd == "edit":
         return _edit_dispatch(args, roots, anchor)
+    if args.cmd == "insert":
+        return _insert_dispatch(args, roots, anchor)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
@@ -495,6 +524,39 @@ def _edit_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) ->
         result = edit_symbol_multi(args.qname, new_body, roots=roots, anchor=anchor)
     else:
         result = edit_symbol(args.qname, new_body, root=roots[0])
+    print(json.dumps(result, indent=2))
+    return 0 if "error" not in result else 1
+
+
+def _insert_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) -> int:
+    """Read new text from file/stdin, dispatch insert_symbol."""
+    if args.stdin and args.body_file:
+        sys.stderr.write("snapctx: pass either body_file or --stdin, not both.\n")
+        return 2
+    if args.stdin:
+        new_text = sys.stdin.read()
+    elif args.body_file:
+        try:
+            new_text = Path(args.body_file).read_text(encoding="utf-8")
+        except OSError as e:
+            sys.stderr.write(f"snapctx: cannot read body_file: {e}\n")
+            return 2
+    else:
+        sys.stderr.write(
+            "snapctx: insert needs a body — pass a file path or --stdin.\n"
+        )
+        return 2
+
+    if len(roots) > 1:
+        result = insert_symbol_multi(
+            args.anchor_qname, new_text,
+            roots=roots, position=args.position, anchor=anchor,
+        )
+    else:
+        result = insert_symbol(
+            args.anchor_qname, new_text,
+            root=roots[0], position=args.position,
+        )
     print(json.dumps(result, indent=2))
     return 0 if "error" not in result else 1
 
