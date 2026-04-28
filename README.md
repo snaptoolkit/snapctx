@@ -118,7 +118,9 @@ You'll mostly use **`context`**. The others let you drill in when `context` isn'
 | `snapctx outline path/` | Symbol tree of a file or directory (functions / classes / constants, nested). Add `--with-bodies` to inline source for every symbol. | Cheaper than reading whole files; directory mode gives you a module map. |
 | `snapctx source <qname>` | Full body of a single symbol. Add `--with-neighbors` for resolved callee signatures. | When you have an exact qname and want its source. |
 | `snapctx expand <qname>` | Walk the call graph. `--direction callees \| callers \| both`, `--depth 1 \| 2`. | "Who calls this?" / "What does this depend on?" |
-| `snapctx edit <qname> <body_file>` | **Write op**. Replace a symbol's body by qname (re-indexes the file before returning). `--stdin` reads the body from stdin instead of a file. Refuses if the file's SHA has drifted since indexing — the caller must re-query for fresh coordinates. | Editing a function or class without re-reading the whole file. Pair with `source` (to see what's there) → write the replacement → `edit`. |
+| `snapctx edit <qname> <body_file>` | **Write op**. Replace a symbol's body by qname (re-indexes the file before returning). `--stdin` reads the body from stdin instead of a file. Refuses if the file's SHA has drifted since indexing — the caller must re-query for fresh coordinates. **Syntax pre-flight**: refuses Python (`ast.parse`) or TS/TSX (tree-sitter) edits that would leave the file unparseable. | Editing a function or class without re-reading the whole file. Pair with `source` (to see what's there) → write the replacement → `edit`. |
+| `snapctx insert <anchor_qname> <body_file> [--position before\|after]` | **Write op**. Insert a NEW top-level symbol adjacent to an anchor symbol. Same staleness + syntax guards as `edit`. | Adding a new function or class without rewriting the whole file. |
+| Python API: `edit_symbol_batch(edits, root)` | **Write op (Python only — no CLI yet)**. Apply N edits in one call, grouped by file, per-file atomic. A syntax error in any edit on a file rolls back THAT file; other files in the batch land independently. One re-index for the whole batch. | Multi-symbol refactors (rename across N callers, add validation to N functions). |
 
 The query can be:
 - **Natural language**: `"how does rate limiting work"`, `"where do we verify credentials"`
@@ -456,7 +458,11 @@ The three levers we tuned (85 s → 10 s on the same repo): walker-level vendor-
 Everything the CLI exposes is also a Python function. Import from `snapctx.api`:
 
 ```python
-from snapctx.api import context, search_code, find_literal, expand, outline, map_repo, get_source, index_root
+from snapctx.api import (
+    context, search_code, find_literal, expand, outline, map_repo,
+    get_source, index_root,
+    edit_symbol, insert_symbol, edit_symbol_batch,   # write ops
+)
 
 # Build or refresh the index.
 index_root("/path/to/repo")
@@ -483,6 +489,46 @@ src = get_source("auth.service:login", with_neighbors=True, root="/path/to/repo"
 ```
 
 All functions return JSON-serializable dicts.
+
+### Write operations
+
+The same qname-based addressing also drives writes. `edit_symbol` replaces a single symbol's body, `insert_symbol` adds a new one next to an anchor, `edit_symbol_batch` applies many edits in one call:
+
+```python
+from snapctx.api import edit_symbol, insert_symbol, edit_symbol_batch
+
+# Replace one symbol's body. Splices in at the indexed line range,
+# checks the file's SHA hasn't drifted since indexing, runs a syntax
+# pre-flight (ast.parse for Python, tree-sitter for TS/TSX), and
+# re-indexes the file before returning.
+edit_symbol(
+    "auth.service:login",
+    "def login(username, password):\n    return _verify(username, password)\n",
+    root="/path/to/repo",
+)
+
+# Add a brand-new top-level function next to an anchor.
+insert_symbol(
+    "auth.service:login",
+    "\n\ndef logout(session_id):\n    return _drop(session_id)\n",
+    root="/path/to/repo",
+    position="after",
+)
+
+# Apply many edits in one call. Per-file atomic: a syntax error on
+# any edit in file X rolls back X's edits; files Y, Z still land.
+# One re-index for the whole batch.
+edit_symbol_batch(
+    [
+        {"qname": "auth.service:login",  "new_body": "..."},
+        {"qname": "auth.service:logout", "new_body": "..."},
+        {"qname": "auth.tokens:revoke",  "new_body": "..."},
+    ],
+    root="/path/to/repo",
+)
+```
+
+All write ops return structured `{"error": ..., "hint": ...}` dicts on failure (`not_found`, `stale_coordinates`, `syntax_error`, `write_failed`, …) so an LLM agent can treat them as recoverable and retry. Vendor scopes are read-only — write ops refuse them.
 
 For monorepos, the multi-root variants (`context_multi`, `search_code_multi`, `expand_multi`, `outline_multi`, `get_source_multi`) accept a list of roots and merge / route across them. The CLI uses these automatically when `discover_roots()` returns more than one root.
 
