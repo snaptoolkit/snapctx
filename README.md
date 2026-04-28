@@ -121,6 +121,9 @@ You'll mostly use **`context`**. The others let you drill in when `context` isn'
 | `snapctx edit <qname> <body_file>` | **Write op**. Replace a symbol's body by qname (re-indexes the file before returning). `--stdin` reads the body from stdin instead of a file. Refuses if the file's SHA has drifted since indexing — the caller must re-query for fresh coordinates. **Syntax pre-flight**: refuses Python (`ast.parse`) or TS/TSX (tree-sitter) edits that would leave the file unparseable. | Editing a function or class without re-reading the whole file. Pair with `source` (to see what's there) → write the replacement → `edit`. |
 | `snapctx insert <anchor_qname> <body_file> [--position before\|after]` | **Write op**. Insert a NEW top-level symbol adjacent to an anchor symbol. Same staleness + syntax guards as `edit`. | Adding a new function or class without rewriting the whole file. |
 | Python API: `edit_symbol_batch(edits, root)` | **Write op (Python only — no CLI yet)**. Apply N edits in one call, grouped by file, per-file atomic. A syntax error in any edit on a file rolls back THAT file; other files in the batch land independently. One re-index for the whole batch. | Multi-symbol refactors (rename across N callers, add validation to N functions). |
+| Python API: `delete_symbol(qname, root)` | Remove a symbol entirely. Drops the line range and trims one leading blank line so PEP-8 spacing between top-level fns survives the deletion. | Clean removal — `edit_symbol(q, "")` would corrupt surrounding spacing. |
+| Python API: `add_import(file, statement, root)` / `remove_import(file, statement, root)` | Add or remove an import line. Idempotent (`already_present` / `already_absent` in the response). Imports live above the first symbol and aren't reachable via `edit_symbol`; these fill that gap. | Updating imports after a rename, adding a new dependency, removing dead imports. |
+| Python API: `create_file(path, content, root)` / `delete_file(path, root)` / `move_file(old, new, root)` | File-level write ops. `create_file` writes a new file + reindexes; `delete_file` unlinks + drops symbols from the index; `move_file` renames + reindexes and returns `importing_files` so the caller can rewrite imports via `add_import` / `remove_import`. | Adding / removing / moving whole modules. |
 
 The query can be:
 - **Natural language**: `"how does rate limiting work"`, `"where do we verify credentials"`
@@ -461,7 +464,10 @@ Everything the CLI exposes is also a Python function. Import from `snapctx.api`:
 from snapctx.api import (
     context, search_code, find_literal, expand, outline, map_repo,
     get_source, index_root,
-    edit_symbol, insert_symbol, edit_symbol_batch,   # write ops
+    # write ops:
+    edit_symbol, insert_symbol, edit_symbol_batch, delete_symbol,
+    add_import, remove_import,
+    create_file, delete_file, move_file,
 )
 
 # Build or refresh the index.
@@ -529,6 +535,35 @@ edit_symbol_batch(
 ```
 
 All write ops return structured `{"error": ..., "hint": ...}` dicts on failure (`not_found`, `stale_coordinates`, `syntax_error`, `write_failed`, …) so an LLM agent can treat them as recoverable and retry. Vendor scopes are read-only — write ops refuse them.
+
+For the cases that don't fit the symbol model (imports, file lifecycle), there are dedicated ops:
+
+```python
+from snapctx.api import (
+    delete_symbol,
+    add_import, remove_import,
+    create_file, delete_file, move_file,
+)
+
+# Drop a symbol entirely (vs edit_symbol(q, "") which corrupts spacing).
+delete_symbol("auth.legacy:old_login", root="/path/to/repo")
+
+# Add or remove an import. Idempotent: re-running with the same
+# statement is a no-op. Lands at the bottom of the existing import
+# block, or at the top of the file if there are no imports yet.
+add_import("auth/service.py", "from .tokens import revoke", root="/path/to/repo")
+remove_import("auth/service.py", "import legacy_auth", root="/path/to/repo")
+
+# File-level lifecycle.
+create_file("auth/tokens.py", "def revoke(s):\n    ...\n", root="/path/to/repo")
+delete_file("auth/legacy.py", root="/path/to/repo")
+
+# Move + identify import sites that need rewriting.
+result = move_file("auth/legacy.py", "auth/legacy_v0.py", root="/path/to/repo")
+for f in result["importing_files"]:
+    remove_import(f, "from auth.legacy import x", root="/path/to/repo")
+    add_import(f, "from auth.legacy_v0 import x", root="/path/to/repo")
+```
 
 For monorepos, the multi-root variants (`context_multi`, `search_code_multi`, `expand_multi`, `outline_multi`, `get_source_multi`) accept a list of roots and merge / route across them. The CLI uses these automatically when `discover_roots()` returns more than one root.
 
