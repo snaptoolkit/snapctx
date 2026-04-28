@@ -21,6 +21,7 @@ from snapctx.api._edit_batch import edit_symbol_batch
 from snapctx.api._files import create_file, delete_file, move_file
 from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
+from snapctx.api._grep import grep_files
 from snapctx.api._imports import add_import, remove_import
 from snapctx.api._indexer import index_root
 from snapctx.api._insert import insert_symbol
@@ -32,6 +33,7 @@ from snapctx.api._multi import (
     expand_multi,
     find_literal_multi,
     get_source_multi,
+    grep_files_multi,
     insert_symbol_multi,
     map_repo_multi,
     outline_multi,
@@ -61,6 +63,8 @@ __all__ = [
     "find_literal_multi",
     "get_source",
     "get_source_multi",
+    "grep_files",
+    "grep_files_multi",
     "index_root",
     "insert_symbol",
     "insert_symbol_multi",

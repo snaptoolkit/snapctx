@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from snapctx.parsers.base import Parser
+from snapctx.parsers.config import EnvParser, JsonParser, TomlParser, YamlParser
+from snapctx.parsers.markdown import MarkdownParser
 from snapctx.parsers.python import PythonParser
 from snapctx.parsers.shell import ShellParser
 from snapctx.parsers.typescript import TypeScriptParser
 
-_PARSERS: list[Parser] = [PythonParser(), TypeScriptParser(), ShellParser()]
+_PARSERS: list[Parser] = [
+    PythonParser(),
+    TypeScriptParser(),
+    ShellParser(),
+    MarkdownParser(),
+    TomlParser(),
+    YamlParser(),
+    JsonParser(),
+    EnvParser(),
+]
 
 _BY_EXT: dict[str, Parser] = {
     ext: p for p in _PARSERS for ext in p.extensions
@@ -16,6 +27,20 @@ _BY_EXT: dict[str, Parser] = {
 
 def parser_for(suffix: str) -> Parser | None:
     return _BY_EXT.get(suffix)
+
+
+def parser_for_path(path) -> Parser | None:
+    """Pick a parser for a Path, handling dotfile-as-extension cases.
+
+    ``Path(".env").suffix`` is empty, so a plain suffix lookup misses
+    dotfiles whose extension *is* their entire name. Try the suffix
+    first, then fall back to ``"." + name`` (so ``.env`` matches the
+    ``EnvParser``'s registered ``.env`` extension).
+    """
+    p = _BY_EXT.get(path.suffix)
+    if p is not None:
+        return p
+    return _BY_EXT.get(f".{path.name}" if not path.name.startswith(".") else path.name)
 
 
 def supported_extensions() -> tuple[str, ...]:

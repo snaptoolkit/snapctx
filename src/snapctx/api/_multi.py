@@ -27,6 +27,7 @@ from typing import Any, Callable, Literal
 from snapctx.api._context import context
 from snapctx.api._edit import edit_symbol
 from snapctx.api._find import find_literal
+from snapctx.api._grep import grep_files
 from snapctx.api._graph import expand
 from snapctx.api._insert import insert_symbol
 from snapctx.api._map import map_repo
@@ -422,6 +423,63 @@ def map_repo_multi(
     if errors:
         payload["root_errors"] = errors
     payload["token_estimate"] = rough_token_count(payload)
+    return payload
+
+
+def grep_files_multi(
+    pattern: str,
+    roots: list[Path],
+    *,
+    regex: bool = False,
+    in_path: str | None = None,
+    case_insensitive: bool = False,
+    context_lines: int = 1,
+    max_results: int = 200,
+    max_files: int = 5000,
+    anchor: Path | None = None,
+) -> dict:
+    """Run ``grep_files`` on every root in parallel and union the matches."""
+    from snapctx.roots import root_label
+
+    if not roots:
+        return {
+            "pattern": pattern, "regex": regex, "matches": [],
+            "match_count": 0, "files_scanned": 0, "truncated": False,
+        }
+
+    ok, errors = _fan_out(
+        lambda r: grep_files(
+            pattern, root=r, regex=regex, in_path=in_path,
+            case_insensitive=case_insensitive, context_lines=context_lines,
+            max_results=max_results, max_files=max_files,
+        ),
+        roots, anchor=anchor,
+    )
+
+    merged: list[dict] = []
+    files_scanned = 0
+    any_truncated = False
+    for r, res in ok:
+        if res.get("truncated"):
+            any_truncated = True
+        files_scanned += int(res.get("files_scanned", 0))
+        merged.extend(_tag_items(res.get("matches", []), root_label(r, anchor)))
+
+    truncated_total = len(merged) > max_results
+    if truncated_total:
+        merged = merged[:max_results]
+
+    payload: dict = {
+        "pattern": pattern,
+        "regex": regex,
+        "roots": _root_labels(roots, anchor),
+        "matches": merged,
+        "match_count": len(merged),
+        "files_scanned": files_scanned,
+        "truncated": any_truncated or truncated_total,
+    }
+    if errors:
+        payload["root_errors"] = errors
     return payload
 
 

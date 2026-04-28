@@ -11,6 +11,7 @@ from snapctx.config import WalkerConfig
 from snapctx.parsers.registry import (
     extensions_for_languages,
     parser_for,
+    parser_for_path,
     supported_extensions,
 )
 
@@ -117,9 +118,10 @@ def iter_source_files(
             continue
         if extra_exclude is not None and extra_exclude.match_file(rel_str):
             continue
-        if path.suffix not in enabled_exts_set:
+        suffix = path.suffix or (path.name if path.name.startswith(".") else "")
+        if suffix not in enabled_exts_set:
             continue
-        if parser_for(path.suffix) is None:
+        if parser_for_path(path) is None:
             continue
         if skip_suffixes and any(path.name.endswith(suf) for suf in skip_suffixes):
             continue
@@ -134,3 +136,73 @@ def iter_source_files(
         except OSError:
             continue
         yield path
+
+
+def iter_text_files(
+    root: Path, config: WalkerConfig | None = None
+) -> Iterator[Path]:
+    """Yield every text-like file under ``root`` (parser-supported or not).
+
+    Same gitignore / vendor-dir / vendor-bundle / size-cap rules as
+    ``iter_source_files``, but does NOT filter by parser-registered
+    extension. Binary files are skipped via a cheap null-byte sniff over
+    the first 4 KB. Used by ``snapctx grep`` to scan markdown, configs,
+    docs, and any other text the user may want to search beyond what the
+    indexer parses.
+    """
+    cfg = config or WalkerConfig()
+    root = root.resolve()
+
+    skip_dirs = skip_dirs_for(cfg)
+    skip_suffixes = (
+        _VENDOR_BUNDLE_SUFFIXES + cfg.extra_skip_suffixes
+        if cfg.skip_vendor_bundles
+        else cfg.extra_skip_suffixes
+    )
+
+    gitignore = load_gitignore(root) if cfg.respect_gitignore else None
+    extra_include = (
+        pathspec.PathSpec.from_lines("gitignore", cfg.extra_include)
+        if cfg.extra_include
+        else None
+    )
+    extra_exclude = (
+        pathspec.PathSpec.from_lines("gitignore", cfg.extra_exclude)
+        if cfg.extra_exclude
+        else None
+    )
+
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        rel_str = str(rel)
+
+        if any(part in skip_dirs for part in rel.parts):
+            continue
+        if extra_exclude is not None and extra_exclude.match_file(rel_str):
+            continue
+        if skip_suffixes and any(path.name.endswith(suf) for suf in skip_suffixes):
+            continue
+        if gitignore is not None and gitignore.match_file(rel_str):
+            if extra_include is None or not extra_include.match_file(rel_str):
+                continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > cfg.max_file_size or size == 0:
+            continue
+        if _looks_binary(path):
+            continue
+        yield path
+
+
+def _looks_binary(path: Path, sniff_bytes: int = 4096) -> bool:
+    """Cheap binary detector: any NUL byte in the first ``sniff_bytes``."""
+    try:
+        with path.open("rb") as f:
+            chunk = f.read(sniff_bytes)
+    except OSError:
+        return True
+    return b"\x00" in chunk

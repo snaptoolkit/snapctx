@@ -22,7 +22,7 @@
 
 [See the controlled benchmark](#tool-benchmark) for per-query breakdowns.
 
-Languages today: Python, TypeScript, TSX, JSX, and shell (`.sh`/`.bash`). The parser layer is pluggable — adding a language is a single new file.
+Languages today: Python, TypeScript, TSX, JSX, shell (`.sh`/`.bash`), Markdown, TOML, YAML, JSON, and `.env` files. Code is parsed structurally (symbols, calls, imports); docs and configs index headings / top-level keys so an agent can find them without grep. The parser layer is pluggable — adding a language is a single new file.
 
 ---
 
@@ -169,6 +169,7 @@ You'll mostly use **`context`**. The others let you drill in when `context` isn'
 | `snapctx context "query"` | Everything-in-one-call: search + callees + callers + source + outlines. **Audit-aware**: when the query is an unambiguous audit phrasing (e.g. "audit every `transaction.atomic` site"), also runs `find` on the literal and attaches an exhaustive `find_results` block. | First move for any question. ~3–10 k tokens back. |
 | `snapctx search "query"` | Top-K ranked symbols with signatures. Add `--with-bodies` to inline source. Add `--also <term2> [...]` to batch related terms in one call. | Ranked discovery; `--with-bodies` for one-shot audits when ≤ K hits. |
 | `snapctx find "<literal>"` | **Exhaustive** literal-substring enumeration over every indexed symbol body. Returns ALL matches (not ranked, not capped). Add `--with-bodies` to inline containing-symbol source; add `--with-callers` to attach depth-1 callers (deduped) to every hit. | "Every place that uses X" audits — matches grep coverage with structured output. `--with-callers` turns it into "every site AND who triggers them" in one call. |
+| `snapctx grep "<pattern>"` | Literal (default) or `--regex` search over **every** text file under the root — markdown, configs (TOML/YAML/JSON/.env), code, docs, plain text. Walks with the same gitignore + vendor + binary filters the indexer uses. Code-file hits are annotated with the enclosing-symbol qname so the agent can pivot to `snapctx source <qname>`. `-i` for case-insensitive, `--in <path>` to narrow, `-C N` for context lines. | Replaces the agent's external `grep`/`rg`. Closes the gap that `find` (symbol-body-only) leaves on README/configs/comments. |
 | `snapctx map [--prefix PATH] [--depth 1\|2]` | Repo-wide table of contents — every indexed file's top-level symbols (signature, 1-line docstring, decorators), grouped by directory. No query needed. `--depth 2` also pulls in direct children (class methods). `--prefix` scopes to a sub-tree (e.g. `src/`). | Orientation when you don't yet have a specific question — fresh repo, unfamiliar area. Pairs with `search` for the actual lookup once you've oriented. ~6–30 k tokens depending on scope. |
 | `snapctx outline path/` | Symbol tree of a file or directory (functions / classes / constants, nested). Add `--with-bodies` to inline source for every symbol. | Cheaper than reading whole files; directory mode gives you a module map. |
 | `snapctx source <qname>` | Full body of a single symbol. Add `--with-neighbors` for resolved callee signatures. | When you have an exact qname and want its source. |

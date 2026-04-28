@@ -34,7 +34,7 @@ def index_root(root: str | Path) -> dict:
     """
     from snapctx.config import load_config
     from snapctx.index import sha_bytes
-    from snapctx.parsers.registry import parser_for
+    from snapctx.parsers.registry import parser_for_path
     from snapctx.walker import iter_source_files
 
     root_path = Path(root).resolve()
@@ -70,7 +70,7 @@ def index_root(root: str | Path) -> dict:
             if idx.current_sha(file_str) == sha:
                 counts["skipped"] += 1
                 continue
-            parser = parser_for(file.suffix)
+            parser = parser_for_path(file)
             assert parser is not None   # walker already filtered
             result = parser.parse(file, root_path)
             idx.ingest(file_str, parser.language, sha, result)
@@ -136,7 +136,7 @@ def index_vendor_package(
     """
     from snapctx.config import WalkerConfig
     from snapctx.index import sha_bytes
-    from snapctx.parsers.registry import parser_for
+    from snapctx.parsers.registry import parser_for_path
     from snapctx.walker import iter_source_files
 
     repo_root = Path(repo_root).resolve()
@@ -166,7 +166,7 @@ def index_vendor_package(
             if idx.current_sha(file_str) == sha:
                 counts["skipped"] += 1
                 continue
-            parser = parser_for(file.suffix)
+            parser = parser_for_path(file)
             assert parser is not None
             result = parser.parse(file, pkg_path)
             idx.ingest(file_str, parser.language, sha, result)

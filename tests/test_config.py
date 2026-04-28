@@ -40,7 +40,7 @@ def test_loads_extra_skip_dirs(tmp_path: Path) -> None:
     _write_config(tmp_path, '[walker]\nextra_skip_dirs = ["legacy"]\n')
     cfg = load_config(tmp_path)
     files = {p.name for p in iter_source_files(tmp_path, cfg.walker)}
-    assert files == {"live.py"}
+    assert files == {"live.py", "snapctx.toml"}
 
 
 def test_extra_skip_suffixes(tmp_path: Path) -> None:
@@ -50,7 +50,7 @@ def test_extra_skip_suffixes(tmp_path: Path) -> None:
     _write_config(tmp_path, '[walker]\nextra_skip_suffixes = [".generated.ts"]\n')
     cfg = load_config(tmp_path)
     files = {p.name for p in iter_source_files(tmp_path, cfg.walker)}
-    assert files == {"real.ts"}
+    assert files == {"real.ts", "snapctx.toml"}
 
 
 def test_skip_vendor_bundles_off_keeps_minified(tmp_path: Path) -> None:
@@ -60,7 +60,7 @@ def test_skip_vendor_bundles_off_keeps_minified(tmp_path: Path) -> None:
     _write_config(tmp_path, '[walker]\nskip_vendor_bundles = false\n')
     cfg = load_config(tmp_path)
     files = {p.name for p in iter_source_files(tmp_path, cfg.walker)}
-    assert files == {"real.js", "lib.min.js"}
+    assert files == {"real.js", "lib.min.js", "snapctx.toml"}
 
 
 def test_default_skip_vendor_bundles_drops_minified(tmp_path: Path) -> None:
@@ -96,7 +96,7 @@ def test_skip_vendor_packages_off_indexes_node_modules(tmp_path: Path) -> None:
     _write_config(tmp_path, '[walker]\nskip_vendor_packages = false\n')
     cfg = load_config(tmp_path)
     files = {p.name for p in iter_source_files(tmp_path, cfg.walker)}
-    assert files == {"app.py", "dep.js", "patched.py"}
+    assert files == {"app.py", "dep.js", "patched.py", "snapctx.toml"}
 
 
 def test_max_file_size_override(tmp_path: Path) -> None:
@@ -110,7 +110,7 @@ def test_max_file_size_override(tmp_path: Path) -> None:
     _write_config(tmp_path, '[walker]\nmax_file_size = 1024\n')
     cfg = load_config(tmp_path)
     files = {p.name for p in iter_source_files(tmp_path, cfg.walker)}
-    assert files == {"small.py"}
+    assert files == {"small.py", "snapctx.toml"}
 
 
 def test_languages_filter_drops_typescript(tmp_path: Path) -> None:
@@ -143,7 +143,7 @@ def test_extra_exclude_matches_globs(tmp_path: Path) -> None:
     _write_config(tmp_path, '[walker]\nextra_exclude = ["docs/generated/**"]\n')
     cfg = load_config(tmp_path)
     files = {str(p.relative_to(tmp_path)) for p in iter_source_files(tmp_path, cfg.walker)}
-    assert files == {"src/real.py"}
+    assert files == {"src/real.py", "snapctx.toml"}
 
 
 def test_extra_include_overrides_gitignore(tmp_path: Path) -> None:
@@ -177,7 +177,7 @@ def test_respect_gitignore_off_indexes_ignored_files(tmp_path: Path) -> None:
     _write_config(tmp_path, '[walker]\nrespect_gitignore = false\n')
     cfg = load_config(tmp_path)
     files = {p.name for p in iter_source_files(tmp_path, cfg.walker)}
-    assert files == {"secret.py", "public.py"}
+    assert files == {"secret.py", "public.py", "snapctx.toml"}
 
 
 def test_index_root_loads_config(tmp_path: Path) -> None:

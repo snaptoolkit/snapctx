@@ -30,6 +30,8 @@ from snapctx.api import (
     find_literal_multi,
     get_source,
     get_source_multi,
+    grep_files,
+    grep_files_multi,
     index_root,
     insert_symbol,
     insert_symbol_multi,
@@ -112,6 +114,11 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
                  arg_names=(
                      "literal", "in_path", "kind",
                      "with_bodies", "with_callers", "max_results",
+                 )),
+    QueryCommand("grep", grep_files, grep_files_multi,
+                 arg_names=(
+                     "pattern", "regex", "in_path", "case_insensitive",
+                     "context_lines", "max_results", "max_files",
                  )),
     QueryCommand("map", map_repo, map_repo_multi,
                  arg_names=("depth", "prefix")),
@@ -351,6 +358,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_find.add_argument("--root", default=".")
     _add_vendor_args(p_find)
+
+    p_grep = sub.add_parser(
+        "grep",
+        help=(
+            "Literal or regex search over EVERY text file under the root "
+            "(markdown, configs, code, docs). Annotates code-file hits "
+            "with the enclosing-symbol qname."
+        ),
+    )
+    p_grep.add_argument("pattern")
+    p_grep.add_argument(
+        "--regex", action="store_true",
+        help="Treat the pattern as a Python regex instead of a literal substring.",
+    )
+    p_grep.add_argument(
+        "-i", "--ignore-case", dest="case_insensitive", action="store_true",
+        help="Case-insensitive match.",
+    )
+    p_grep.add_argument(
+        "--in", dest="in_path", default=None, metavar="PATH",
+        help="Restrict to files under this path (relative or absolute).",
+    )
+    p_grep.add_argument(
+        "-C", "--context", dest="context_lines", type=int, default=1,
+        help="Lines of context before/after each match (default 1, 0 to disable).",
+    )
+    p_grep.add_argument(
+        "--max-results", dest="max_results", type=int, default=200,
+    )
+    p_grep.add_argument(
+        "--max-files", dest="max_files", type=int, default=5000,
+        help="Cap on files scanned (early exit on huge trees).",
+    )
+    p_grep.add_argument("--root", default=".")
 
     p_map = sub.add_parser(
         "map",
