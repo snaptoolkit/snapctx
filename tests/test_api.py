@@ -515,3 +515,100 @@ def test_search_with_no_kind_and_no_results_returns_empty_normally(tmp_path: Pat
     out = search_code("nonexistent_thing_xyz", root=root, mode="lexical")
     assert out["results"] == []
     assert "kind_filter_dropped" not in out
+
+
+def test_search_surfaces_kind_suggestion_when_wrong_kind_drifts(tmp_path: Path) -> None:
+    """The harder failure case: kind filter returns *some* results but they're
+    all semantically-related-but-wrong drift, while a same-name symbol
+    actually exists in a different kind. Surface that with a hint and a
+    structured ``kind_suggestion`` field.
+    """
+    from snapctx.api import index_root, search_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "models.py").write_text(
+        "class Translator:\n"
+        "    def get_translation_verse_word_mapping(self):\n"
+        "        return {}\n"
+    )
+    (root / "phases.py").write_text(
+        "def run_word_mappings_phase():\n"
+        "    return None\n"
+        "def word_mapping_api():\n"
+        "    return None\n"
+    )
+    index_root(root)
+
+    # Hybrid (default) reproduces the agent's reported drift: the embedding
+    # model finds functions whose names are semantically related to the
+    # query (``word_mapping_api``, ``run_word_mappings_phase``) and lets
+    # them through the kind=function filter — even though the user
+    # actually wanted the exact-name method.
+    out = search_code(
+        "get_translation_verse_word_mapping",
+        kind="function", root=root, mode="hybrid",
+    )
+    assert out["results"], "drift hits should appear with kind=function"
+    assert out.get("kind_suggestion") is not None
+    assert out["kind_suggestion"]["kind"] == "method"
+    assert out["kind_suggestion"]["qname"].endswith(":Translator.get_translation_verse_word_mapping")
+    assert "method" in out["hint"].lower()
+
+
+def test_search_no_kind_suggestion_when_exact_match_present(tmp_path: Path) -> None:
+    """When the query's simple name appears in the results, no suggestion —
+    the user got what they asked for, no nudge needed."""
+    from snapctx.api import index_root, search_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "x.py").write_text("def get_thing(): return 1\n")
+    (root / "y.py").write_text("def get_thing_helper(): return 2\n")
+    index_root(root)
+
+    out = search_code("get_thing", kind="function", root=root, mode="lexical")
+    assert any(r["qname"].endswith(":get_thing") for r in out["results"])
+    assert "kind_suggestion" not in out
+
+
+def test_search_no_kind_suggestion_for_multi_word_query(tmp_path: Path) -> None:
+    """Multi-word queries don't have a single simple name to match — no
+    kind suggestion, just normal results."""
+    from snapctx.api import index_root, search_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.py").write_text("def something(): return 1\n")
+    (root / "b.py").write_text(
+        "class Other:\n"
+        "    def do_work(self): return 2\n"
+    )
+    index_root(root)
+
+    out = search_code("do work please", kind="function", root=root, mode="lexical")
+    assert "kind_suggestion" not in out
+
+
+def test_search_no_kind_suggestion_when_multiple_kinds_share_name(tmp_path: Path) -> None:
+    """If the same simple name exists in multiple kinds, the suggestion is
+    ambiguous — don't nudge in that case."""
+    from snapctx.api import index_root, search_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.py").write_text("def login(): return 1\n")
+    (root / "b.py").write_text(
+        "class User:\n"
+        "    def login(self): return 2\n"
+    )
+    (root / "c.py").write_text(
+        "class Admin:\n"
+        "    def login(self): return 3\n"
+    )
+    index_root(root)
+
+    out = search_code("xyz_unrelated_to_anything", kind="function", root=root, mode="lexical")
+    # Two methods named login exist, but query doesn't match either.
+    # No kind_suggestion because multiple kinds match.
+    assert "kind_suggestion" not in out

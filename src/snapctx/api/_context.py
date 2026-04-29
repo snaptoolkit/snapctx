@@ -131,8 +131,57 @@ def context(
         payload["find_results"] = audit_block
 
     payload["token_estimate"] = rough_token_count(payload)
-    payload["hint"] = _context_hint(audit_block)
+    _apply_payload_guard(payload, body_char_cap)
+    payload["hint"] = _context_hint(audit_block, payload.get("trimmed"))
     return payload
+
+
+# Threshold above which ``context`` aggressively trims its response.
+# 8 k tokens is roughly 32 KB of text — past this, the value of more
+# context drops sharply (the agent has plenty of seeds to act on) and
+# the cost of more tokens is real. Hard budget at ~2× soft so a single
+# huge seed body can still survive when it actually carries the answer.
+_SOFT_TOKEN_BUDGET = 8000
+_HARD_TOKEN_BUDGET = 16000
+
+
+def _apply_payload_guard(payload: dict, body_char_cap: int) -> None:
+    """Trim broad-query payloads in place, marking the response as trimmed.
+
+    Two stages, applied only when needed:
+
+    1. **Soft overflow** (> ``_SOFT_TOKEN_BUDGET``): drop ``file_outlines``.
+       The seeds carry the load-bearing code; outlines are extra
+       structure that on broad framework/routing queries can balloon to
+       half the response.
+    2. **Hard overflow** (still > ``_HARD_TOKEN_BUDGET`` after stage 1):
+       halve the per-seed body cap so each seed shrinks. Better to lose
+       some bytes from each seed than to drop a seed entirely.
+
+    Sets ``payload["trimmed"] = "soft"`` or ``"hard"`` so the hint can
+    nudge the agent toward a scoped follow-up — broad ``context`` on
+    framework/routing questions overmatches by design, and the user
+    almost always has a directional hint that ``snapctx_grep --in-path``
+    or ``snapctx_search`` would resolve faster.
+    """
+    if payload.get("token_estimate", 0) <= _SOFT_TOKEN_BUDGET:
+        return
+    payload["trimmed"] = "soft"
+    if payload.get("file_outlines"):
+        payload["file_outlines"] = []
+        payload["token_estimate"] = rough_token_count(payload)
+    if payload["token_estimate"] <= _HARD_TOKEN_BUDGET:
+        return
+    payload["trimmed"] = "hard"
+    half_cap = max(400, body_char_cap // 2)
+    for seed in payload.get("seeds", []):
+        body = seed.get("source")
+        if isinstance(body, str) and len(body) > half_cap:
+            seed["source"] = (
+                body[:half_cap]
+                + f"\n# ... truncated ({len(body) - half_cap} chars) ..."
+            )
+    payload["token_estimate"] = rough_token_count(payload)
 
 
 def _maybe_audit_find(
@@ -174,20 +223,37 @@ def _maybe_audit_find(
     }
 
 
-def _context_hint(audit_block: dict | None) -> str:
+def _context_hint(audit_block: dict | None, trimmed: str | None = None) -> str:
     base = (
         "This response bundles search + callees + callers + top sources + a file outline. "
         "If it's still not enough, call `expand`, `outline`, or `source` on a specific qname."
     )
+    trim_note = ""
+    if trimmed == "soft":
+        trim_note = (
+            "Broad query — payload was over the soft budget, so file outlines "
+            "were dropped. For a tighter follow-up: `snapctx_grep \"<literal>\" "
+            "--in-path <subdir>` for wiring, `snapctx_search \"<name>\"` for a "
+            "known symbol, or `snapctx_outline <file>` for one file's full "
+            "structure. "
+        )
+    elif trimmed == "hard":
+        trim_note = (
+            "Broad query — payload was over the hard budget, so seed bodies "
+            "were further truncated. Strongly consider scoping the next call: "
+            "`snapctx_grep \"<literal>\" --in-path <subdir>`, "
+            "`snapctx_search \"<name>\"`, or `snapctx_source <qname>` on the "
+            "exact symbol you want full source for. "
+        )
     if audit_block is None:
-        return base
+        return trim_note + base
     lit = audit_block["literal"]
     n = audit_block["match_count"]
     return (
         f"Audit-class query detected: ran find({lit!r}) for exhaustive coverage — "
         f"{n} sites in `find_results`. For full bodies of every site, call "
-        f"`find {lit!r} --with-bodies`. " + base
-    )
+        f"`find {lit!r} --with-bodies`. "
+    ) + trim_note + base
 
 
 def _seeds_for_query(

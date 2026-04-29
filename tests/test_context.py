@@ -182,3 +182,83 @@ def test_context_ambiguous_audit_skips_find(tmp_path: Path) -> None:
 
     out = context("audit every LLM provider call", root=repo, mode="lexical")
     assert "find_results" not in out
+
+
+def test_context_drops_file_outlines_on_soft_overflow(tmp_path: Path) -> None:
+    """Broad framework/routing-style queries returned 9k+-token payloads in
+    real agent sessions because file_outlines ballooned. When the payload
+    exceeds the soft budget (8k tokens), drop file_outlines — seeds carry
+    the load-bearing code, outlines are extra structure."""
+    from snapctx.api import context, index_root
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # Generate ~50 files with realistic-size symbols so file_outlines'
+    # contribution dwarfs the seeds' contribution.
+    for i in range(50):
+        body = "\n".join(
+            f"def helper_{i}_{j}(x):\n"
+            f"    \"\"\"Helper {j} for module {i}.\"\"\"\n"
+            f"    return x + {j}"
+            for j in range(20)
+        )
+        (repo / f"mod_{i}.py").write_text(body + "\n")
+    index_root(repo)
+
+    out = context("helper return value", root=repo, mode="lexical")
+    if out.get("trimmed") in ("soft", "hard"):
+        assert out["file_outlines"] == [], "soft trim should drop outlines"
+        assert "snapctx_grep" in out["hint"]
+    else:
+        # Synthetic fixture might not exceed the budget on this machine —
+        # the unit test below proves the trim mechanics directly.
+        pass
+
+
+def test_apply_payload_guard_drops_outlines_above_soft_budget() -> None:
+    """Direct unit test of the trim mechanics: feed a payload that exceeds
+    the soft budget and assert file_outlines are dropped."""
+    from snapctx.api._context import _SOFT_TOKEN_BUDGET, _apply_payload_guard
+
+    payload = {
+        "seeds": [{"qname": "x:y", "source": "def y(): return 1"}],
+        "file_outlines": [
+            {"file": f"mod_{i}.py", "symbols": [{"qname": f"x:y_{j}"} for j in range(50)]}
+            for i in range(20)
+        ],
+        "token_estimate": _SOFT_TOKEN_BUDGET + 1000,
+    }
+    _apply_payload_guard(payload, body_char_cap=2000)
+    assert payload["trimmed"] == "soft"
+    assert payload["file_outlines"] == []
+
+
+def test_apply_payload_guard_truncates_seeds_above_hard_budget() -> None:
+    """Past the hard budget, also truncate per-seed source bodies."""
+    from snapctx.api._context import _HARD_TOKEN_BUDGET, _apply_payload_guard
+
+    big_body = "x = 1\n" * 10000  # ~60KB body
+    payload = {
+        "seeds": [{"qname": "a:b", "source": big_body}],
+        "file_outlines": [],
+        "token_estimate": _HARD_TOKEN_BUDGET + 1000,
+    }
+    original_len = len(payload["seeds"][0]["source"])
+    _apply_payload_guard(payload, body_char_cap=2000)
+    assert payload["trimmed"] == "hard"
+    assert len(payload["seeds"][0]["source"]) < original_len
+    assert "truncated" in payload["seeds"][0]["source"]
+
+
+def test_apply_payload_guard_noop_below_threshold() -> None:
+    """Modest-size payloads aren't touched."""
+    from snapctx.api._context import _apply_payload_guard
+
+    payload = {
+        "seeds": [{"qname": "x:y", "source": "def y(): return 1"}],
+        "file_outlines": [{"file": "x.py", "symbols": []}],
+        "token_estimate": 1500,
+    }
+    _apply_payload_guard(payload, body_char_cap=2000)
+    assert "trimmed" not in payload
+    assert payload["file_outlines"] != []

@@ -137,3 +137,94 @@ def test_grep_context_lines(tmp_path: Path) -> None:
     m = result["matches"][0]
     assert m["before"] == ["alpha", "bravo"]
     assert m["after"] == ["delta", "echo"]
+
+
+def test_grep_ranks_definitions_above_usages_by_default(tmp_path: Path) -> None:
+    """Common pain point: grep on a popular token (``DEFAULT_MODEL``,
+    ``useTranslations``) drowns the user in import lines. Definitions
+    should bubble to the top so "where is this defined" is the first
+    visible match.
+    """
+    from snapctx.api import grep_files
+
+    repo = tmp_path / "repo"
+    (repo / "uses").mkdir(parents=True)
+    (repo / "defs").mkdir(parents=True)
+    # Three usages first in walk order, then the definition.
+    (repo / "uses" / "a.py").write_text(
+        "from defs.config import DEFAULT_MODEL\n"
+        "x = DEFAULT_MODEL\n"
+    )
+    (repo / "uses" / "b.py").write_text("import DEFAULT_MODEL\n")
+    (repo / "uses" / "c.py").write_text("y = DEFAULT_MODEL\n")
+    (repo / "defs" / "config.py").write_text("DEFAULT_MODEL = 'gpt-x'\n")
+
+    out = grep_files("DEFAULT_MODEL", root=repo)
+    # First match is the definition (``DEFAULT_MODEL = ...``), not an import.
+    assert out["matches"], out
+    first = out["matches"][0]
+    assert first["definition"] is True
+    assert first["file"].endswith("defs/config.py")
+
+
+def test_grep_definition_detection_is_pattern_aware(tmp_path: Path) -> None:
+    """The check flags declarations of the *search target*, not just any line
+    that begins with a declaration keyword. ``const x = fetchVerse()``
+    declares ``x`` and uses ``fetchVerse`` — for a ``fetchVerse`` query
+    that's a usage, not a definition. The bug this prevents is real
+    declaration-of-something lines crowding out actual definitions of
+    the thing the user actually grep'd for.
+    """
+    from snapctx.api._grep import _looks_like_definition
+
+    # Real definitions of ``fetchVerse``.
+    assert _looks_like_definition("export function fetchVerse() {", "fetchVerse")
+    assert _looks_like_definition("    async function fetchVerse() {", "fetchVerse")
+    assert _looks_like_definition("export const fetchVerse = (id) => {", "fetchVerse")
+    # Real definitions for other shapes.
+    assert _looks_like_definition("export class ChapterPage {}", "ChapterPage")
+    assert _looks_like_definition("export const cmsAccessToken = 'abc'", "cmsAccessToken")
+    assert _looks_like_definition("interface UserProfile { id: string }", "UserProfile")
+    assert _looks_like_definition("type Result<T> = T | Error", "Result")
+    assert _looks_like_definition("export enum Status { Idle }", "Status")
+
+    # Lines that contain the target but don't declare it.
+    assert not _looks_like_definition("import { fetchVerse } from './api'", "fetchVerse")
+    assert not _looks_like_definition("const x = fetchVerse()", "fetchVerse")
+    assert not _looks_like_definition("    return fetchVerse(id)", "fetchVerse")
+    # Python module-level constant convention.
+    assert _looks_like_definition("DEFAULT_MODEL = 'gpt-x'", "DEFAULT_MODEL")
+    assert not _looks_like_definition("from config import DEFAULT_MODEL", "DEFAULT_MODEL")
+    # Regex pattern → coarse fallback (line shape only).
+    assert _looks_like_definition("export function fetchVerse() {", "fetch.*", is_regex=True)
+    assert not _looks_like_definition("    return fetchVerse(id)", "fetch.*", is_regex=True)
+
+
+def test_grep_definitions_first_can_be_disabled(tmp_path: Path) -> None:
+    """Audits that need every occurrence in source-tree order can opt out."""
+    from snapctx.api import grep_files
+
+    repo = tmp_path / "repo"
+    (repo / "u").mkdir(parents=True)
+    (repo / "d").mkdir(parents=True)
+    (repo / "u" / "a.py").write_text("x = NEEDLE\n")
+    (repo / "d" / "config.py").write_text("NEEDLE = 1\n")
+
+    out = grep_files("NEEDLE", root=repo, definitions_first=False)
+    # Natural walk order — usage came first because ``u/`` sorts before ``d/``.
+    assert out["matches"]
+    assert out["matches"][0]["file"].endswith("u/a.py")
+
+
+def test_grep_match_carries_definition_flag(tmp_path: Path) -> None:
+    from snapctx.api import grep_files
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "x.py").write_text("def hello():\n    return 1\n")
+    (repo / "y.py").write_text("hello()\n")
+
+    out = grep_files("hello", root=repo, definitions_first=False)
+    by_file = {m["file"].split("/")[-1]: m for m in out["matches"]}
+    assert by_file["x.py"]["definition"] is True
+    assert by_file["y.py"]["definition"] is False

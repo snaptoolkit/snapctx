@@ -439,6 +439,7 @@ def grep_files_multi(
     context_lines: int = 1,
     max_results: int = 200,
     max_files: int = 5000,
+    definitions_first: bool = True,
     anchor: Path | None = None,
 ) -> dict:
     """Run ``grep_files`` on every root in parallel and union the matches."""
@@ -455,6 +456,7 @@ def grep_files_multi(
             pattern, root=r, regex=regex, in_path=in_path,
             case_insensitive=case_insensitive, context_lines=context_lines,
             max_results=max_results, max_files=max_files,
+            definitions_first=definitions_first,
         ),
         roots, anchor=anchor,
     )
@@ -467,6 +469,12 @@ def grep_files_multi(
             any_truncated = True
         files_scanned += int(res.get("files_scanned", 0))
         merged.extend(_tag_items(res.get("matches", []), root_label(r, anchor)))
+
+    if definitions_first and merged:
+        # Per-root grep already grouped definitions first; re-apply the
+        # bucket-sort across roots so the final list keeps every root's
+        # definitions ahead of every root's usages, not just per-root.
+        merged.sort(key=lambda m: (not m.get("definition", False),))
 
     truncated_total = len(merged) > max_results
     if truncated_total:

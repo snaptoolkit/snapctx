@@ -17,6 +17,8 @@ from snapctx.api._common import (
     row_to_symbol_dict,
 )
 from snapctx.api._ranking import (
+    _exact_name_token,
+    _simple_name,
     build_fts_query,
     classify_query,
     hybrid_weights,
@@ -122,6 +124,18 @@ def search_code(
                     if consts:
                         d["referenced_constants"] = consts
             results.append(d)
+
+        # Stronger kind-mismatch detection than the empty-result retry: even
+        # when ``kind`` returned hits, those hits may all be semantically-
+        # related-but-wrong drift (e.g. ``kind='function'`` for what's really
+        # a class method ``foo`` returns the package's ``foo_helper`` /
+        # ``foo_api`` instead of the actual ``foo`` method). When the query
+        # is a single identifier and *none* of the returned hits have the
+        # exact simple-name match, but a symbol with that simple name exists
+        # in another kind, surface it.
+        kind_suggestion = (
+            _detect_kind_suggestion(idx, query, kind, results) if kind is not None else None
+        )
     finally:
         idx.close()
 
@@ -132,6 +146,15 @@ def search_code(
             f"kinds: {kinds_str}. In Python, class members are kind='method' "
             f"(not 'function'); in TypeScript, exported types are 'type' or "
             f"'interface' (not 'class')."
+        )
+    elif kind_suggestion:
+        sug_qname, sug_kind = kind_suggestion
+        hint = (
+            f"Returned {len(results)} match(es) but none have the exact name "
+            f"{_simple_name(sug_qname)!r}. A symbol with that exact name "
+            f"exists as kind={sug_kind!r}: {sug_qname}. Re-run with "
+            f"kind={sug_kind!r} to target it directly, or call "
+            f"get_source({sug_qname!r}) to skip search entirely."
         )
     else:
         hint = search_hint(
@@ -147,11 +170,62 @@ def search_code(
     if kind_filter_dropped:
         response["kind_filter_dropped"] = True
         response["actual_kinds"] = actual_kinds
+    if kind_suggestion:
+        response["kind_suggestion"] = {
+            "qname": kind_suggestion[0],
+            "kind": kind_suggestion[1],
+        }
     if also:
         response["also"] = list(also)
     if scope is not None:
         response["scope"] = scope
     return response
+
+
+def _detect_kind_suggestion(
+    idx, query: str, kind: str | None, results: list[dict]
+) -> tuple[str, str] | None:
+    """When a kinded search drifts to wrong-but-related results, find the
+    canonical symbol the user probably meant and report its actual kind.
+
+    Triggers only when:
+      1. ``query`` is a single identifier-shaped token (so we can do a
+         meaningful exact-name lookup — multi-word queries don't have a
+         "the" simple name to match).
+      2. None of the returned ``results`` have a simple_name equal to that
+         token (i.e. all hits are drift, not exact matches).
+      3. A symbol with that simple_name exists in the index under a
+         *different* kind than the one filtered for.
+
+    Returns ``(qname, kind)`` of the suggestion, or ``None`` when any of
+    the above conditions don't hold. Limited to one suggestion — multiple
+    same-name matches across kinds are too ambiguous to nudge confidently.
+    """
+    name = _exact_name_token(query)
+    if name is None:
+        return None
+    # If any result already has the exact simple name, the user got what
+    # they asked for; no suggestion needed.
+    for r in results:
+        if _simple_name(r["qname"]) == name:
+            return None
+    # Look up symbols whose qname ends with the simple-name segment.
+    # ``%:name`` matches top-level symbols (``module:name``); ``%.name``
+    # matches members (``module:Class.name``). Cap at a handful — if the
+    # name is genuinely ambiguous, we don't want to nudge.
+    rows = idx.conn.execute(
+        "SELECT qname, kind FROM symbols WHERE qname LIKE ? OR qname LIKE ? "
+        "LIMIT 3",
+        (f"%:{name}", f"%.{name}"),
+    ).fetchall()
+    candidates = [
+        (row["qname"], row["kind"])
+        for row in rows
+        if row["kind"] != kind and _simple_name(row["qname"]) == name
+    ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
 
 
 def _rank_one(idx, query: str, *, k: int, kind, mode: str) -> list[tuple]:

@@ -30,7 +30,7 @@ Match the *shape of the question* to the right tool. Most queries skip orientati
 | **Known symbol name** (a function, class, type, or component name you already have) | `snapctx_search "<name>" -k 5` with the right `kind` (see [Kind filter](#kind-filter-cheat-sheet)) | The fastest path when you have the name. If `kind` was wrong, snapctx retries without it automatically and tells you the actual kind. |
 | **Literal / config key / env var / token / route fragment** (any exact string you'd `grep` for) | `snapctx_grep "<literal>" --in-path <subtree>` | Path-scoped grep is dramatically faster and cleaner than broad search. **Always pass `in_path`** when you have a directory hint. |
 | **Workflow / pipeline question with likely docs** (a feature that probably has a README or design doc) | `snapctx_source "<doc-path>:<heading>"` if you can guess the doc, otherwise `snapctx_context "<query>"` | Docs prose is indexed. Going straight to the doc heading + one implementation symbol is faster than crawling the whole feature. |
-| **Open-ended feature / concept** (you don't have a name; you don't know the area) | `snapctx_context "<query>"` | Returns top seeds with full source + callees + callers + file outlines in one shot. Best when the source area is broad or unknown. |
+| **Open-ended feature / concept** (you don't have a name; you don't know the area) | `snapctx_context "<query>"` | Returns top seeds with full source + callees + callers + file outlines in one shot. Best when the source area is broad or unknown. Self-trims on overflow (sets `trimmed: "soft"` or `"hard"` and emits a scope-down hint) — when you see that, follow the hint with `snapctx_grep --in-path` or `snapctx_search`. |
 | **Repo with framework build artifacts** (any `.next/`, `dist/`, `.svelte-kit/`, etc. in tree) | path-scoped `snapctx_grep` first, NOT broad context | snapctx skips standard build dirs by default, but path-scoping is still the safest move when the codebase has lots of generated noise. |
 | **Genuinely don't know the repo's shape** | `snapctx_map` | Repo-wide table of contents in one call. Lean by default; pass `mode=full` for signatures. |
 
@@ -43,7 +43,12 @@ After the first call, pivot:
 
 ## Kind filter cheat sheet
 
-`snapctx_search` accepts `kind=<value>` to narrow results. Wrong kind = empty result (snapctx will retry without the filter and tell you what the actual kind was, so you don't have to re-query). Common confusions:
+`snapctx_search` accepts `kind=<value>` to narrow results. If the kind is wrong, snapctx detects it two ways:
+
+- **No results** → it retries without the filter and tells you the actual kinds it found.
+- **Drift** (results came back but none have your exact name) → it surfaces a `kind_suggestion` field naming the canonical symbol with that exact name and its actual kind.
+
+Either way you don't need to re-query blind. Common confusions:
 
 | Language | Top-level def → kind | Class member → kind | Type / interface → kind | Component → kind |
 |---|---|---|---|---|
@@ -81,7 +86,7 @@ In **multi-root** sessions (opencode running at a parent of multiple indexed sub
 | "Show me this exact symbol's source" | `snapctx_source <qname>` | Full body. `with_neighbors=true` adds callee signatures. |
 | "Who calls X? What does X call?" | `snapctx_expand <qname> direction=both depth=2` | Call-graph neighborhood. |
 | "Every place that uses literal L (inside symbols)" | `snapctx_find "L"` | Exhaustive — no top-K cap. Annotated with qname per hit. |
-| "Find raw text anywhere — comments, prose, configs, env files" | `snapctx_grep "P" --in-path <dir>` | Literal or regex over every gitignore-respected text file. Code-file hits annotated with `qname`. **Always pass `in_path`** if you have a directory hint — 10× faster on monorepos and dramatically cleaner results. |
+| "Find raw text anywhere — comments, prose, configs, env files" | `snapctx_grep "P" --in-path <dir>` | Literal or regex over every gitignore-respected text file. Code-file hits annotated with `qname`. **Always pass `in_path`** if you have a directory hint — 10× faster on monorepos and dramatically cleaner results. By default ranks **definition lines first** (where `P` is `def`/`class`/`function`/`const`/etc. introduced) then usage lines, so "where is X defined" surfaces immediately. Each match carries a `definition: bool` flag. Pass `--no-definitions-first` for natural file-order audits. |
 
 ## Write ops — qname-addressed, syntax-checked, atomic per file
 

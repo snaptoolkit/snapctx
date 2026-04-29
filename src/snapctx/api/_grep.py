@@ -41,6 +41,7 @@ def grep_files(
     context_lines: int = 1,
     max_results: int = 200,
     max_files: int = 5000,
+    definitions_first: bool = True,
 ) -> dict:
     """Search every text file under ``root`` for ``pattern``.
 
@@ -51,6 +52,14 @@ def grep_files(
     is the number of leading/trailing lines around each match.
     ``max_results`` caps total hits; ``max_files`` caps files scanned
     (early-exit on huge trees).
+
+    ``definitions_first`` (default ``True``) puts hits whose matched
+    line *looks like a declaration* (``def`` / ``class`` / ``function`` /
+    ``const`` / ``type`` / ``interface`` / etc.) before usage hits in
+    the result list. Each hit carries a ``definition: bool`` flag so
+    callers can re-sort or filter further. Set to ``False`` to keep the
+    natural file-and-line order — useful for audits that need every
+    occurrence in source-tree sequence.
     """
     if not pattern:
         return {
@@ -127,6 +136,7 @@ def grep_files(
                 "file": file_str,
                 "line": i,
                 "text": line.rstrip(),
+                "definition": _looks_like_definition(line, pattern, is_regex=regex),
             }
             if context_lines > 0:
                 lo = max(0, i - 1 - context_lines)
@@ -143,6 +153,12 @@ def grep_files(
         if truncated:
             break
 
+    if definitions_first and matches:
+        # Stable two-bucket sort: definitions in their natural walk order,
+        # then usages in their natural walk order. Preserves "where in the
+        # tree did this appear" intuition within each group.
+        matches.sort(key=lambda m: (not m["definition"],))
+
     return {
         "pattern": pattern,
         "regex": regex,
@@ -152,6 +168,79 @@ def grep_files(
         "truncated": truncated,
         "hint": _hint_for(matches, truncated, max_results, regex),
     }
+
+
+# Declaration keywords across the languages we encounter most often. Used
+# in two patterns: (1) generic "is this any kind of declaration line"
+# (when the user passed a regex pattern, since we can't construct a
+# specific check), (2) pattern-aware "is THIS specific name being
+# declared on this line" (when the user passed a literal pattern, which
+# is the common case).
+_DECL_KEYWORDS = (
+    r"def|class|function|interface|type|enum|namespace|module|"
+    r"struct|trait|impl|fn|func|fun|var|let|const|val|"
+    r"protocol|extension|record|object"
+)
+_DECL_PREFIX = (
+    r"(?:export\s+)?"
+    r"(?:public\s+|private\s+|protected\s+|internal\s+)?"
+    r"(?:static\s+|final\s+|abstract\s+|sealed\s+|open\s+)?"
+    r"(?:pub\s+)?"
+    r"(?:async\s+)?"
+)
+_DEFINITION_RE = re.compile(
+    r"^\s*" + _DECL_PREFIX + r"(?:" + _DECL_KEYWORDS + r")\b"
+)
+# Python module-level constant convention: ``NAME = …`` at column 0,
+# uppercase identifier. Catches ``DEFAULT_MODEL = "gpt-x"`` which has no
+# declaration keyword. Tightened to uppercase-only to avoid false
+# positives on ordinary Python assignments like ``x = 1``.
+_PY_MODULE_CONST_RE = re.compile(r"^[A-Z_][A-Z0-9_]+\s*=")
+
+
+def _looks_like_definition(
+    line: str, pattern: str | None = None, *, is_regex: bool = False
+) -> bool:
+    """``True`` if ``line`` looks like a declaration of the search target.
+
+    When ``pattern`` is a literal (``is_regex=False``), the check is
+    pattern-aware: the line counts as a "definition of pattern" only if
+    the pattern token appears immediately after a declaration keyword
+    (``def foo``, ``class Foo``, ``const FOO``, …) or, for Python
+    module-level constants, is itself the LHS of an assignment.
+
+    When ``pattern`` is a regex or omitted, fall back to the generic
+    "starts with any declaration keyword" check — coarser but still a
+    useful signal that this isn't an import/usage line.
+
+    The pattern-aware path matters when the user greps for a name that
+    *appears* on a declaration line without being the thing declared:
+    ``const x = fetchVerse()`` declares ``x`` and uses ``fetchVerse``,
+    so for a fetchVerse query it must rank as a usage, not a
+    definition. Generic-shape checks would mis-flag it.
+    """
+    if pattern and not is_regex:
+        escaped = re.escape(pattern)
+        # Pattern token sits immediately after a declaration keyword.
+        keyword_decl = re.search(
+            r"(?:^|\s)(?:" + _DECL_KEYWORDS + r")\s+"
+            + escaped
+            + r"(?:\s|[(=:<{,])",
+            line,
+        )
+        if keyword_decl:
+            return True
+        # Python module-level: pattern is itself the LHS of an assignment.
+        py_const = re.match(r"^" + escaped + r"\s*=", line)
+        if py_const:
+            return True
+        return False
+    # Regex pattern or no pattern given — coarse generic check.
+    if _DEFINITION_RE.match(line):
+        return True
+    if _PY_MODULE_CONST_RE.match(line):
+        return True
+    return False
 
 
 def _under_prefix(rel_path: str, prefix: str) -> bool:

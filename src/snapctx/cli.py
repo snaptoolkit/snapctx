@@ -119,6 +119,7 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
                  arg_names=(
                      "pattern", "regex", "in_path", "case_insensitive",
                      "context_lines", "max_results", "max_files",
+                     "definitions_first",
                  )),
     QueryCommand("map", map_repo, map_repo_multi,
                  arg_names=("depth", "prefix", "mode")),
@@ -514,6 +515,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_grep.add_argument(
         "--max-files", dest="max_files", type=int, default=5000,
         help="Cap on files scanned (early exit on huge trees).",
+    )
+    p_grep.add_argument(
+        "--no-definitions-first", dest="definitions_first",
+        action="store_false", default=True,
+        help=(
+            "Keep matches in natural file/line order. Default is to put "
+            "declaration-shaped lines (def/class/function/const/...) before "
+            "import/usage lines so 'where is X defined' surfaces fast."
+        ),
     )
     p_grep.add_argument("--root", default=".")
 
