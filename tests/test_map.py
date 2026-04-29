@@ -71,3 +71,59 @@ def test_map_prefix_filter_scopes_to_subtree(tmp_path: Path) -> None:
     files = [f["file"] for d in out["directories"] for f in d["files"]]
     assert files == ["middleware/auth.py"]
     assert out["prefix"] == "middleware/"
+
+
+def test_map_default_lean_mode_drops_signatures_and_lines(indexed_root: Path) -> None:
+    """Lean mode (the default) keeps the orientation payload small by
+    omitting per-symbol signatures and line ranges. Agents call
+    ``outline <file>`` when they need those details for a specific file.
+    """
+    out = map_repo(root=indexed_root)
+    assert out["mode"] == "lean"
+    auth_file = next(
+        f for d in out["directories"] for f in d["files"]
+        if f["file"].endswith("auth.py")
+    )
+    for s in auth_file["symbols"]:
+        assert "signature" not in s, s
+        assert "lines" not in s, s
+        assert "qname" in s
+        assert "kind" in s
+
+
+def test_map_full_mode_restores_signature_and_lines(indexed_root: Path) -> None:
+    out = map_repo(root=indexed_root, mode="full")
+    assert out["mode"] == "full"
+    auth_file = next(
+        f for d in out["directories"] for f in d["files"]
+        if f["file"].endswith("auth.py")
+    )
+    sm = next(s for s in auth_file["symbols"] if s["qname"].endswith(":SessionManager"))
+    assert "signature" in sm
+    assert "lines" in sm
+    assert "-" in sm["lines"]
+
+
+def test_map_lean_mode_is_substantially_smaller(indexed_root: Path) -> None:
+    """The whole point of lean mode: payload is meaningfully smaller."""
+    import json
+
+    lean = json.dumps(map_repo(root=indexed_root, mode="lean"))
+    full = json.dumps(map_repo(root=indexed_root, mode="full"))
+    assert len(lean) < len(full)
+    # Conservative: at least 20% smaller on the small fixture; on real
+    # repos the gap is much larger because TS signatures dominate.
+    assert len(lean) < len(full) * 0.85, (len(lean), len(full))
+
+
+def test_map_lean_mode_still_keeps_decorators(indexed_root: Path) -> None:
+    """Decorators are the most identifying fact about routed/typed symbols
+    (``@app.route``, ``@dataclass``) — lean mode keeps them because they're
+    cheap and signature-replacing."""
+    out = map_repo(root=indexed_root)
+    auth_file = next(
+        f for d in out["directories"] for f in d["files"]
+        if f["file"].endswith("auth.py")
+    )
+    session = next(s for s in auth_file["symbols"] if s["qname"].endswith(":Session"))
+    assert session["decorators"] == ["@dataclass"]

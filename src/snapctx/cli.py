@@ -42,7 +42,7 @@ from snapctx.api import (
     search_code,
     search_code_multi,
 )
-from snapctx.roots import discover_roots, root_label
+from snapctx.roots import discover_roots, find_subproject_dirs, has_project_marker, root_label
 from snapctx.vendor import (
     discover_packages,
     ensure_vendor_indexed,
@@ -121,7 +121,7 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
                      "context_lines", "max_results", "max_files",
                  )),
     QueryCommand("map", map_repo, map_repo_multi,
-                 arg_names=("depth", "prefix")),
+                 arg_names=("depth", "prefix", "mode")),
 )
 _QUERY_BY_NAME: dict[str, QueryCommand] = {c.name: c for c in _QUERY_COMMANDS}
 
@@ -145,14 +145,24 @@ def _resolve_roots(start: str) -> tuple[list[Path], Path]:
 def _bootstrap_first_index(anchor: Path) -> list[Path]:
     """Build a fresh index when nothing reachable from ``anchor`` is indexed.
 
-    Pre-flight check first — if the directory has no source files we can
-    parse, return an empty list (caller surfaces an error) so we don't
-    leave a stub ``.snapctx/`` behind in unrelated directories.
+    When ``anchor`` itself has no project marker but two or more of its
+    immediate children do, treat it as a monorepo parent and auto-index
+    each child as a separate root (multi-root). Otherwise fall back to
+    indexing ``anchor`` itself.
+
+    Pre-flight check first — if the chosen target(s) have no source
+    files we can parse, return an empty list so we don't leave a stub
+    ``.snapctx/`` behind in unrelated directories.
 
     All progress messages go to stderr; the query JSON stays clean on
     stdout. The first-ever invocation also triggers a fastembed model
     download (~30 MB) which prints its own progress.
     """
+    if not has_project_marker(anchor):
+        subs = find_subproject_dirs(anchor)
+        if len(subs) >= 2:
+            return _bootstrap_subprojects(anchor, subs)
+
     from snapctx.config import load_config
     from snapctx.walker import iter_source_files
 
@@ -181,6 +191,80 @@ def _bootstrap_first_index(anchor: Path) -> list[Path]:
         f"{summary['files_updated']} files.\n"
     )
     return discover_roots(anchor)
+
+
+def _bootstrap_subprojects(anchor: Path, subs: list[Path]) -> list[Path]:
+    """Auto-index each sub-project under a monorepo parent.
+
+    Sequential to keep the embedding-model loader simple (one fastembed
+    instance reused across roots). Failures on individual roots don't
+    abort — others still succeed and the caller queries what's available.
+    """
+    sys.stderr.write(
+        f"snapctx: detected monorepo parent at {anchor} — indexing "
+        f"{len(subs)} sub-project(s) ({', '.join(s.name for s in subs)})...\n"
+    )
+    indexed: list[Path] = []
+    for sub in subs:
+        try:
+            summary = index_root(sub)
+        except Exception as e:
+            sys.stderr.write(
+                f"snapctx: index failed at {sub.name}/: {type(e).__name__}: {e}\n"
+            )
+            continue
+        sys.stderr.write(
+            f"snapctx: indexed {sub.name}/ — "
+            f"{summary['symbols_indexed']} symbols across "
+            f"{summary['files_updated']} files.\n"
+        )
+        indexed.append(sub.resolve())
+    return indexed
+
+
+def _extend_with_subprojects(anchor: Path, roots: list[Path]) -> list[Path]:
+    """Auto-index sibling sub-projects when discovery returned a walk-down hit.
+
+    If ``discover_roots`` walked down and found one (or more) indexed
+    children, other immediate-child sub-projects with project markers but
+    no ``.snapctx/`` would otherwise stay invisible — that's the bug
+    where running from a monorepo parent only sees the first sub-project
+    that happened to be indexed. Scan for missing siblings, index them,
+    and return the combined list.
+
+    Walk-up case (``anchor`` itself or an ancestor is indexed) → no-op:
+    the user has a single canonical index covering the tree.
+    """
+    if not roots:
+        return roots
+    anchor_resolved = anchor.resolve()
+    for r in roots:
+        try:
+            anchor_resolved.relative_to(r.resolve())
+            return roots  # walk-up: at least one root is anchor or above
+        except ValueError:
+            continue
+
+    existing = {r.resolve() for r in roots}
+    new_roots: list[Path] = []
+    for sub in find_subproject_dirs(anchor):
+        if sub in existing:
+            continue
+        sys.stderr.write(f"snapctx: auto-indexing sibling sub-project {sub.name}/...\n")
+        try:
+            summary = index_root(sub)
+        except Exception as e:
+            sys.stderr.write(
+                f"snapctx: auto-index failed at {sub.name}/: {type(e).__name__}: {e}\n"
+            )
+            continue
+        sys.stderr.write(
+            f"snapctx: indexed {sub.name}/ — "
+            f"{summary['symbols_indexed']} symbols across "
+            f"{summary['files_updated']} files.\n"
+        )
+        new_roots.append(sub)
+    return roots + new_roots
 
 
 def _refresh_indexes(roots: list[Path]) -> None:
@@ -236,12 +320,52 @@ def _add_vendor_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _emit(data) -> None:
+    """Print a JSON payload with formatting chosen for the consumer.
+
+    Agents and pipes don't benefit from pretty-printing — every newline
+    and indent is pure token overhead, and on a mid-sized repo's ``map``
+    the pretty form is ~40% bigger than compact for zero readability
+    gain when the consumer is an LLM or ``jq``. Default to compact
+    whenever stdout isn't a TTY (i.e. piped or captured); pretty when a
+    human is reading the output directly. Both defaults are overridable.
+    """
+    if _OUTPUT_STYLE == "pretty":
+        sys.stdout.write(json.dumps(data, indent=2))
+    elif _OUTPUT_STYLE == "compact":
+        sys.stdout.write(json.dumps(data, separators=(",", ":")))
+    else:
+        # auto: pretty for humans, compact for everything else.
+        if sys.stdout.isatty():
+            sys.stdout.write(json.dumps(data, indent=2))
+        else:
+            sys.stdout.write(json.dumps(data, separators=(",", ":")))
+    sys.stdout.write("\n")
+
+
+_OUTPUT_STYLE: str = "auto"
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="snapctx", description=__doc__)
+    output_grp = parser.add_mutually_exclusive_group()
+    output_grp.add_argument(
+        "--compact", dest="output_style", action="store_const", const="compact",
+        help="Force single-line JSON output (default when stdout is piped — saves ~40% bytes).",
+    )
+    output_grp.add_argument(
+        "--pretty", dest="output_style", action="store_const", const="pretty",
+        help="Force indented JSON output (default when stdout is a TTY).",
+    )
+    parser.set_defaults(output_style="auto")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_index = sub.add_parser("index", help="Scan a repo and build/update the index.")
     p_index.add_argument("root", nargs="?", default=".", help="Repo root (default: cwd)")
+    p_index.add_argument(
+        "--force", "-f", action="store_true",
+        help="Wipe the existing index and rebuild from scratch (use after a parser upgrade).",
+    )
 
     p_watch = sub.add_parser(
         "watch",
@@ -411,6 +535,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--prefix", default=None, metavar="PATH",
         help="Restrict the map to files under <root>/<prefix> (e.g. src/).",
     )
+    p_map.add_argument(
+        "--mode", default="lean", choices=("lean", "full"),
+        help=(
+            "lean (default): omit per-symbol signatures and line ranges to "
+            "keep the orientation payload small. full: include them — call "
+            "outline <file> instead when you need that detail."
+        ),
+    )
     p_map.add_argument("--root", default=".")
     _add_vendor_args(p_map)
 
@@ -487,11 +619,13 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    global _OUTPUT_STYLE
+    _OUTPUT_STYLE = getattr(args, "output_style", "auto")
 
     # Index / watch: per-root, no fan-out. Indexing creates ``.snapctx``
     # if missing, so no discovery is needed — operate on the explicit path.
     if args.cmd == "index":
-        print(json.dumps(index_root(args.root), indent=2))
+        _emit(index_root(args.root, force=args.force))
         return 0
 
     if args.cmd == "watch":
@@ -510,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
         roots = _bootstrap_first_index(anchor)
         if not roots:
             return 2
+    else:
+        roots = _extend_with_subprojects(anchor, roots)
 
     # Scope resolution is cheap (~3 ms) so we run it BEFORE the repo
     # auto-refresh: if the query is scoped to a vendor package, the repo's
@@ -534,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown command: {args.cmd}")
         return 2
 
-    print(json.dumps(cmd.call(args, roots, anchor), indent=2))
+    _emit(cmd.call(args, roots, anchor))
     return 0
 
 
@@ -565,7 +701,7 @@ def _edit_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) ->
         result = edit_symbol_multi(args.qname, new_body, roots=roots, anchor=anchor)
     else:
         result = edit_symbol(args.qname, new_body, root=roots[0])
-    print(json.dumps(result, indent=2))
+    _emit(result)
     return 0 if "error" not in result else 1
 
 
@@ -598,7 +734,7 @@ def _insert_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) 
             args.anchor_qname, new_text,
             root=roots[0], position=args.position,
         )
-    print(json.dumps(result, indent=2))
+    _emit(result)
     return 0 if "error" not in result else 1
 
 
@@ -659,18 +795,12 @@ def _vendor_dispatch(args: argparse.Namespace) -> int:
     if args.vendor_cmd == "list":
         indexed = list_indexed_vendors(root)
         available = sorted(discover_packages(root).keys())
-        print(json.dumps(
-            {"root": str(root), "indexed": indexed, "available": available},
-            indent=2,
-        ))
+        _emit({"root": str(root), "indexed": indexed, "available": available})
         return 0
 
     if args.vendor_cmd == "forget":
         ok = forget_vendor(root, args.name)
-        print(json.dumps(
-            {"root": str(root), "package": args.name, "removed": ok},
-            indent=2,
-        ))
+        _emit({"root": str(root), "package": args.name, "removed": ok})
         return 0 if ok else 1
 
     return 2
@@ -692,7 +822,7 @@ def _print_roots(start: str) -> int:
             f"Run a query (e.g. `snapctx context ...`) to auto-index, "
             f"or `snapctx index <path>` explicitly."
         )
-    print(json.dumps(out, indent=2))
+    _emit(out)
     return 0 if roots else 1
 
 

@@ -11,3 +11,5 @@ dist/
 build/
 .DS_Store
 uv.lock
+.claude/
+opencode/node_modules/

@@ -12,6 +12,8 @@ This machine has `snapctx` indexes for many local repos. The `snapctx_*` tools (
 | TypeScript / TSX | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | functions, methods, classes, components, types, interfaces, constants | yes |
 | Shell | `.sh`, `.bash` | functions, module-level | intra-file calls + `source`/`.` imports |
 | Markdown | `.md`, `.markdown` | headings (nested as qnames) | — |
+| HTML / templates | `.html`, `.htm`, `.j2`, `.jinja`, `.jinja2`, `.liquid`, `.njk`, `.twig`, `.hbs`, `.handlebars`, `.mustache` | `<title>` + `<h1>`..`<h6>`; module docstring = stripped prose so prompts/instructions are searchable via embeddings | — |
+| Plain text | `.txt` | one module symbol; docstring = leading prose | — |
 | TOML | `.toml` | top-level keys + table headers | — |
 | YAML | `.yaml`, `.yml` | top-level keys | — |
 | JSON | `.json` | top-level keys | — |
@@ -19,9 +21,17 @@ This machine has `snapctx` indexes for many local repos. The `snapctx_*` tools (
 
 Configs, docs, and env files are first-class — they appear in `snapctx_map`, `snapctx_search`, `snapctx_outline`. Do NOT `glob`/`read` to find them.
 
-## Mandatory first move
+## First move: orient before searching
 
-**In a new session, before any `glob`, `list`, `grep`, or `read`, you MUST call `snapctx_map` at least once.** It's the cheapest possible orientation — repo-wide table of contents in one call. Skipping it and globbing blind is the single biggest waste of tokens. This rule applies even when the eventual question is about non-code files (markdown, configs): `snapctx_map` shows you the repo shape so you know *which directory* matters, instead of `**/*` across the whole tree.
+**When you don't already know the repo's shape, call `snapctx_map` first.** It's the cheapest possible orientation — repo-wide table of contents in one call. Skipping it and globbing blind is the single biggest waste of tokens.
+
+You can skip `snapctx_map` only when both are true: (a) you already have a strong signal about *where* the answer lives (e.g. "this is a Django prompt template — check `backend/.../templates/`"), and (b) you can name a focused first call (`snapctx_context "<concept>"` or `snapctx_grep "<literal>"`). Two calls beats one wasteful map-then-anything chain. But if either is uncertain, `snapctx_map` first.
+
+For non-code questions (configs, markdown, prompts), `snapctx_map` still shows you which directory matters — better than `**/*` across the whole tree.
+
+## Don't delegate to subagents
+
+**Do NOT spawn subagents (`task`, `explore`, or any agent-delegation tool) for code exploration.** Handle the whole question in this thread with `snapctx_*` calls. A subagent starts cold, can't see what you've already learned, and tends to fall back to `grep`/`read`/`glob` — which is exactly the loop this config exists to prevent. The whole point of `snapctx_map` + `snapctx_context` is that one direct call already returns more useful structure than a fresh subagent would gather in ten. If a question feels big enough to delegate, it's big enough to deserve `snapctx_context "<query>"` — try that first.
 
 ## qname format
 
@@ -40,7 +50,7 @@ In **multi-root** sessions (opencode running at a parent of multiple indexed sub
 
 | Question | Tool | Returns |
 |---|---|---|
-| "What's in this repo?" (orientation) | `snapctx_map` | Repo-wide table of contents grouped by directory. `depth=2` adds class methods. **Always call this first in an unfamiliar repo.** |
+| "What's in this repo?" (orientation) | `snapctx_map` | Repo-wide table of contents grouped by directory. Lean by default (qname + kind + 1-line docstring + decorators); pass `mode=full` to also get signatures and line ranges, or call `snapctx_outline <file>` on a specific file when you need that detail. `depth=2` adds class methods. **Always call this first in an unfamiliar repo.** |
 | "How does X work?" / "Where does Y live?" | `snapctx_context "X"` | Top-3 seed symbols with full source + callees + callers + file outlines (one shot, ~3–10 k tokens). Audit-aware: phrasings like *"every place that uses X"* trigger an exhaustive `find` in parallel. |
 | "Find a symbol by name or concept (ranked)" | `snapctx_search "Y"` | Top-K ranked qnames + signatures (no bodies). `kind=function\|method\|class\|component\|interface\|type\|constant` to filter. |
 | "What's in this file/dir?" | `snapctx_outline <path>` | Symbol tree (heading tree for Markdown, key list for configs, structural tree for code). |
@@ -72,7 +82,7 @@ You don't need to read a file before editing it. Every write op:
 
 ## Pick the right tool — decision rules
 
-1. **First call in a new session must be `snapctx_map`.** No exceptions.
+1. **First call should be `snapctx_map`** unless you already know which subdir/area to target *and* can name a focused query. When in doubt, map first.
 2. Question with a concept ("how does auth work", "where is the rate limiter") → `snapctx_context`.
 3. Known symbol name → `snapctx_search`, then `snapctx_source <qname>` for the body.
 4. "What calls / is called by X" → `snapctx_expand`.
@@ -103,6 +113,7 @@ Reading whole files with `read` because one snapctx call missed is the failure m
 - `path` / `prefix` / `in_path` are **relative to the indexed root**. Absolute paths are auto-converted by the wrapper but relative is preferred.
 - `kind` filters: `function`, `method`, `class`, `component`, `interface`, `type`, `constant`, `module`.
 - `snapctx_map`'s `depth` is **symbol** nesting (1 or 2), not directory depth. The full directory tree is always returned.
+- `snapctx_map`'s `mode` defaults to `lean` (no per-symbol signatures or line ranges) so the orientation payload stays small. Set `mode=full` only when you actually need signatures from map; otherwise `snapctx_outline <file>` is the right next call.
 - `snapctx_grep`'s `regex=true` switches the pattern from literal substring to Python regex. `case_insensitive=true` works in both modes.
 
 ## Anti-patterns
@@ -114,3 +125,4 @@ Reading whole files with `read` because one snapctx call missed is the failure m
 - `edit` / `write` to change a function body → use `snapctx_edit_symbol`. Syntax pre-flight catches malformed edits before they corrupt the file.
 - Sequential `edit` calls on related symbols → use `snapctx_edit_batch`. Per-file atomic + one round trip.
 - Renaming a symbol by hand (def + each caller + each import) → use `snapctx_rename_symbol`. One coordinated op vs the multi-step grep-edit-confirm loop.
+- `task` / `explore` subagents for code questions → handle inline with `snapctx_context`. Subagents lose your accumulated context and revert to `grep`/`read` habits in their fresh thread.

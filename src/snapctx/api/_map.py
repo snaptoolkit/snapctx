@@ -2,13 +2,20 @@
 
 A query-free starting point for an agent that has just landed in a repo
 and is asking "what is this thing?". Pulls every top-level symbol's
-signature and one-line docstring summary out of the index in a single
-SQL pass, groups them by directory, and returns the result in source-
-tree order.
+qname and one-line docstring summary out of the index in a single SQL
+pass, groups them by directory, and returns the result in source-tree
+order.
 
-Complements ``outline`` (one file → tree) and ``context`` (query →
-focused pack): ``map`` is what you read first when you don't yet have
-a question.
+Complements ``outline`` (one file → tree, with signatures) and
+``context`` (query → focused pack): ``map`` is what you read first
+when you don't yet have a question.
+
+Output mode: ``mode="lean"`` (default) drops per-symbol signatures
+and line ranges to keep the orientation payload digestible — on a
+mid-sized monorepo this cuts the response by 50–70% and stops agents
+from pivoting away from map because it's too big to parse. Agents
+that need a signature drill in with ``outline <file>``. ``mode="full"``
+restores the verbose payload for tooling that needs every field.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal
 
 from snapctx.api._common import (
     docstring_summary,
@@ -24,18 +32,24 @@ from snapctx.api._common import (
 )
 
 
+MapMode = Literal["lean", "full"]
+
+
 def map_repo(
     root: str | Path = ".",
     scope: str | None = None,
     *,
     depth: int = 1,
     prefix: str | None = None,
+    mode: MapMode = "lean",
 ) -> dict:
     """Return a directory-grouped tree of every indexed file's top-level symbols.
 
     Each symbol carries its qname (for follow-up ``source <qname>`` calls),
-    kind, signature, one-line docstring summary, and source line range.
-    No bodies — this is a survey, not a deep read.
+    kind, and one-line docstring summary. ``mode="full"`` additionally
+    includes the full signature and source line range; the default
+    ``mode="lean"`` omits them — call ``outline <file>`` to get
+    signatures for a specific file.
 
     ``depth=1`` (default) lists only top-level symbols (``parent_qname
     IS NULL``). ``depth=2`` adds direct children — class methods, nested
@@ -48,6 +62,8 @@ def map_repo(
     """
     if depth not in (1, 2):
         raise ValueError(f"depth must be 1 or 2, got {depth}")
+    if mode not in ("lean", "full"):
+        raise ValueError(f"mode must be 'lean' or 'full', got {mode!r}")
 
     root_path = Path(root).resolve()
     idx = open_index(root_path, scope=scope)
@@ -98,7 +114,7 @@ def map_repo(
                 continue
             non_module_rows.append(r)
 
-        symbols = _build_file_symbols(non_module_rows, depth)
+        symbols = _build_file_symbols(non_module_rows, depth, mode)
         if not symbols and not file_summary:
             continue
 
@@ -122,6 +138,7 @@ def map_repo(
     payload: dict = {
         "root": str(root_path),
         "depth": depth,
+        "mode": mode,
         "directories": directories,
         "file_count": len(files_payload),
         "symbol_count": symbol_count,
@@ -138,7 +155,7 @@ def map_repo(
     return payload
 
 
-def _build_file_symbols(rows: list[sqlite3.Row], depth: int) -> list[dict]:
+def _build_file_symbols(rows: list[sqlite3.Row], depth: int, mode: MapMode) -> list[dict]:
     """Group a file's rows into the depth-bounded tree shape.
 
     For ``depth=1``, every row IS a top-level symbol (the SQL filtered
@@ -146,7 +163,7 @@ def _build_file_symbols(rows: list[sqlite3.Row], depth: int) -> list[dict]:
     under their parent and drop any deeper rows.
     """
     if depth == 1:
-        return [_format_symbol(r) for r in rows]
+        return [_format_symbol(r, mode) for r in rows]
 
     by_qname = {r["qname"]: r for r in rows}
     children_of: dict[str, list[sqlite3.Row]] = defaultdict(list)
@@ -160,27 +177,28 @@ def _build_file_symbols(rows: list[sqlite3.Row], depth: int) -> list[dict]:
         # Top-level: parent is None, or parent isn't in this file (e.g.
         # cross-file inheritance — same edge case ``outline`` handles).
         if r["parent_qname"] is None or r["parent_qname"] not in by_qname:
-            d = _format_symbol(r)
+            d = _format_symbol(r, mode)
             kids = children_of.get(r["qname"], [])
             if kids:
-                d["children"] = [_format_symbol(k) for k in kids]
+                d["children"] = [_format_symbol(k, mode) for k in kids]
             out.append(d)
     return out
 
 
-def _format_symbol(row: sqlite3.Row) -> dict:
+def _format_symbol(row: sqlite3.Row, mode: MapMode) -> dict:
     out: dict = {
         "qname": row["qname"],
         "kind": row["kind"],
-        "signature": row["signature"],
         "docstring": docstring_summary(row["docstring"]),
-        "lines": f"{row['line_start']}-{row['line_end']}",
     }
-    # Decorators are stored separately from the signature, so without
-    # this a navigator misses the most identifying fact about a symbol
+    if mode == "full":
+        out["signature"] = row["signature"]
+        out["lines"] = f"{row['line_start']}-{row['line_end']}"
+    # Decorators are the most identifying fact about many symbols
     # (``@app.route('/login')``, ``@dataclass(frozen=True)``,
-    # ``@pytest.fixture``). Cheap to include — usually 0 or 1 per
-    # symbol, never more than a handful.
+    # ``@pytest.fixture``) — kept in lean mode because they're cheap
+    # (usually 0 or 1 per symbol) and signature-replacing for routed
+    # endpoints / typed records.
     if row["decorators"]:
         out["decorators"] = row["decorators"].split("\n")
     return out

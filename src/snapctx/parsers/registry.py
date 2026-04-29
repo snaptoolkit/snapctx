@@ -7,6 +7,7 @@ from snapctx.parsers.config import EnvParser, JsonParser, TomlParser, YamlParser
 from snapctx.parsers.markdown import MarkdownParser
 from snapctx.parsers.python import PythonParser
 from snapctx.parsers.shell import ShellParser
+from snapctx.parsers.text import HTMLParser, TextParser
 from snapctx.parsers.typescript import TypeScriptParser
 
 _PARSERS: list[Parser] = [
@@ -14,6 +15,8 @@ _PARSERS: list[Parser] = [
     TypeScriptParser(),
     ShellParser(),
     MarkdownParser(),
+    HTMLParser(),
+    TextParser(),
     TomlParser(),
     YamlParser(),
     JsonParser(),

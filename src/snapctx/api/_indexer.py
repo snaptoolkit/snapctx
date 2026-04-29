@@ -22,14 +22,19 @@ from pathlib import Path
 from snapctx.index import Index, db_path_for
 
 
-def index_root(root: str | Path) -> dict:
+def index_root(root: str | Path, *, force: bool = False) -> dict:
     """Index (or re-index) every supported source file under ``root``.
 
     Reads ``<root>/snapctx.toml`` if present to override the walker's
     skip lists, language enable list, or size cap. Without a config
     file, behavior is identical to the pre-config version.
 
-    Incremental: files whose SHA matches the stored value are skipped.
+    Incremental by default: files whose SHA matches the stored value are
+    skipped. ``force=True`` wipes the existing index first and rebuilds
+    from scratch — needed after a parser upgrade (new file types, new
+    symbol kinds) so previously-indexed files get re-parsed even when
+    their bytes haven't changed.
+
     Returns a summary dict with counts.
     """
     from snapctx.config import load_config
@@ -44,6 +49,8 @@ def index_root(root: str | Path) -> dict:
     moved = False
 
     try:
+        if force:
+            idx.wipe_all()
         # If the project was renamed/moved on disk, every stored absolute
         # path is now stale. Detect via a sample row's prefix and wipe so
         # the rebuild below repopulates with current paths. Cheaper than

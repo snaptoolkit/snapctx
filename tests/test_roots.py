@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from snapctx.api import index_root
-from snapctx.roots import discover_roots, root_label, route_by_path, route_by_qname
+from snapctx.roots import (
+    discover_roots,
+    find_subproject_dirs,
+    has_project_marker,
+    root_label,
+    route_by_path,
+    route_by_qname,
+)
 
 
 def _make_indexed(root: Path, name: str = "m.py") -> Path:
@@ -141,3 +148,43 @@ def test_root_label_falls_back_to_basename_without_anchor(tmp_path: Path) -> Non
     backend = tmp_path / "backend"
     backend.mkdir()
     assert root_label(backend.resolve()) == "backend"
+
+
+def test_has_project_marker_detects_pyproject(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    p.mkdir()
+    assert not has_project_marker(p)
+    (p / "pyproject.toml").write_text("[project]\nname='x'\n")
+    assert has_project_marker(p)
+
+
+def test_has_project_marker_detects_package_json(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    p.mkdir()
+    (p / "package.json").write_text("{}")
+    assert has_project_marker(p)
+
+
+def test_find_subproject_dirs_returns_only_marker_dirs(tmp_path: Path) -> None:
+    """Children with project markers are real sub-projects; the rest aren't."""
+    parent = tmp_path / "monorepo"
+    parent.mkdir()
+    backend = parent / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text("[project]\nname='b'\n")
+    frontend = parent / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text("{}")
+    docs = parent / "docs"
+    docs.mkdir()
+    (docs / "intro.md").write_text("# docs\n")  # no marker, not a sub-project
+    hidden = parent / ".cache"
+    hidden.mkdir()
+    (hidden / "package.json").write_text("{}")  # hidden dirs skipped regardless
+
+    found = find_subproject_dirs(parent)
+    assert set(found) == {backend.resolve(), frontend.resolve()}
+
+
+def test_find_subproject_dirs_handles_nonexistent_anchor(tmp_path: Path) -> None:
+    assert find_subproject_dirs(tmp_path / "missing") == []

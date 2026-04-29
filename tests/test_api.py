@@ -351,3 +351,30 @@ def test_get_source_with_neighbors_lists_callees(indexed_root: Path) -> None:
     )
     callees = {c["qname"] for c in out["callees"]}
     assert "sample_pkg.utils:hash_token" in callees
+
+
+def test_index_root_force_reindexes_unchanged_files(tmp_path: Path) -> None:
+    """`force=True` rebuilds the index from scratch even when SHAs match.
+
+    Needed after a parser upgrade: a file whose bytes haven't changed still
+    needs to be re-parsed so newly-emitted symbol kinds land in the index.
+    Without ``force``, the SHA-keyed incremental skip would silently keep
+    the old (now stale) parse output.
+    """
+    from snapctx.api import index_root
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.py").write_text("def foo(): return 1\n")
+    summary1 = index_root(root)
+    assert summary1["files_updated"] == 1
+
+    # Same bytes — incremental call skips the file entirely.
+    summary2 = index_root(root)
+    assert summary2["files_updated"] == 0
+    assert summary2["files_unchanged"] == 1
+
+    # `force=True` re-parses despite SHA match.
+    summary3 = index_root(root, force=True)
+    assert summary3["files_updated"] == 1
+    assert summary3["files_unchanged"] == 0

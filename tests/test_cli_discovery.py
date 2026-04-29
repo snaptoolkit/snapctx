@@ -200,8 +200,8 @@ def test_cli_no_source_files_does_not_create_empty_index(tmp_path: Path) -> None
     error cleanly without leaving an empty .snapctx/ behind."""
     bare = tmp_path / "empty"
     bare.mkdir()
-    # No .py / .ts files, just a plain text file.
-    (bare / "README.txt").write_text("nothing to see\n")
+    # No parseable source — only a binary-shaped extension.
+    (bare / "noise.log").write_text("nothing to see\n")
 
     err = io.StringIO()
     real_err = sys.stderr
@@ -267,3 +267,143 @@ def test_cli_qname_routing_from_parent(tmp_path: Path, cmd: str) -> None:
     assert code == 0
     assert isinstance(out, dict)
     assert out.get("root") == "backend"
+
+
+def test_cli_cold_start_multi_root_at_monorepo_parent(tmp_path: Path) -> None:
+    """No index anywhere, but ≥2 marker'd subdirs → bootstrap each as a root.
+
+    Regression for: running ``snapctx context`` at a monorepo parent
+    with no prior indexes silently picked the first child it found
+    (or indexed the parent as one big root) instead of indexing every
+    sub-project that had a project marker.
+    """
+    parent = tmp_path / "monorepo"
+    parent.mkdir()
+    backend = parent / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text("[project]\nname='b'\n")
+    (backend / "auth.py").write_text("def verify_login(u): return True\n")
+    frontend = parent / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text("{}")
+    (frontend / "app.py").write_text("def submit_login(d): return True\n")
+
+    with _at(parent):
+        code, out, err = _run(["search", "login", "-k", "5", "--mode", "lexical"])
+
+    assert code == 0
+    assert isinstance(out, dict)
+    assert set(out["roots"]) == {"backend", "frontend"}
+    assert (backend / ".snapctx" / "index.db").exists()
+    assert (frontend / ".snapctx" / "index.db").exists()
+    # Parent should not become its own indexed root.
+    assert not (parent / ".snapctx").exists()
+    assert "monorepo parent" in err.lower()
+
+
+def test_cli_walk_down_extends_with_unindexed_marker_siblings(tmp_path: Path) -> None:
+    """One sibling indexed, another marker'd but not — extend on next query.
+
+    This is the exact failure mode that bit a real session: ``frontend/``
+    had a ``.snapctx/`` from earlier work, ``backend/`` had a project
+    marker but no index. Running from the monorepo parent only saw
+    ``frontend/`` and the agent fell back to ``grep``.
+    """
+    parent = tmp_path / "monorepo"
+    parent.mkdir()
+    frontend = parent / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text("{}")
+    (frontend / "app.py").write_text("def submit_login(d): return True\n")
+    index_root(frontend)
+    backend = parent / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text("[project]\nname='b'\n")
+    (backend / "auth.py").write_text("def verify_login(u): return True\n")
+    assert not (backend / ".snapctx").exists()
+
+    with _at(parent):
+        code, out, err = _run(["search", "login", "-k", "5", "--mode", "lexical"])
+
+    assert code == 0
+    assert isinstance(out, dict)
+    assert set(out["roots"]) == {"backend", "frontend"}
+    assert (backend / ".snapctx" / "index.db").exists()
+    assert "auto-indexing sibling sub-project" in err.lower()
+
+
+def test_cli_walk_down_skips_siblings_without_project_marker(tmp_path: Path) -> None:
+    """Sibling without a project marker is NOT auto-indexed — too risky.
+
+    Otherwise a ``backups/`` or ``examples/`` dir with stray source files
+    would silently get indexed every time the user queried the parent.
+    """
+    parent = tmp_path / "monorepo"
+    parent.mkdir()
+    frontend = parent / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text("{}")
+    (frontend / "app.py").write_text("def submit_login(d): return True\n")
+    index_root(frontend)
+    backups = parent / "backups"
+    backups.mkdir()
+    (backups / "snapshot.py").write_text("X = 1\n")  # source but no marker
+
+    with _at(parent):
+        code, out, _ = _run(["search", "login", "-k", "5", "--mode", "lexical"])
+
+    assert code == 0
+    assert isinstance(out, dict)
+    # Either single-root response (no "roots" key) or multi-root with only
+    # frontend — both prove backups was not auto-indexed. The disk check
+    # below is the load-bearing assertion.
+    assert set(out.get("roots", ["frontend"])) == {"frontend"}
+    assert not (backups / ".snapctx").exists()
+
+
+def test_cli_walk_up_does_not_trigger_sibling_extension(tmp_path: Path) -> None:
+    """A query inside an already-indexed root must not auto-index siblings.
+
+    The user has chosen a single canonical root for the whole tree;
+    extending with siblings would create overlapping indexes and confuse
+    qname routing.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "m.py").write_text("def hello(): return 1\n")
+    index_root(repo)
+    sibling = repo / "tooling"
+    sibling.mkdir()
+    (sibling / "pyproject.toml").write_text("[project]\nname='t'\n")
+    (sibling / "build.py").write_text("def go(): pass\n")
+
+    with _at(repo):
+        code, _, _ = _run(["search", "hello", "--mode", "lexical"])
+
+    assert code == 0
+    assert not (sibling / ".snapctx").exists()
+
+
+def test_cli_anchor_with_own_marker_uses_single_root_bootstrap(tmp_path: Path) -> None:
+    """A regular project (anchor has its own marker) bootstraps a single root,
+    even if children also have markers. Otherwise a project with a top-level
+    ``pyproject.toml`` plus a ``packages/foo/package.json`` would surprise the
+    user by becoming multi-root.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname='r'\n")
+    (repo / "m.py").write_text("def hello(): return 1\n")
+    nested = repo / "packages" / "foo"
+    nested.mkdir(parents=True)
+    (nested / "package.json").write_text("{}")
+
+    with _at(repo):
+        code, out, err = _run(["search", "hello", "--mode", "lexical"])
+
+    assert code == 0
+    assert isinstance(out, dict)
+    # Single-root: anchor itself was bootstrapped, no multi-root response.
+    assert "roots" not in out or out.get("roots") in (None, [])
+    assert (repo / ".snapctx" / "index.db").exists()
+    assert "monorepo parent" not in err.lower()

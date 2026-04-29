@@ -293,6 +293,18 @@ directory contains parseable source files. Pre-flight is the cheap
 "any source files?" check via the walker — don't create stub
 `.snapctx/` directories in unrelated paths.
 
+**Monorepo parent detection.** When the anchor has no project marker
+of its own but ≥2 immediate-child dirs do (`pyproject.toml`,
+`package.json`, `Cargo.toml`, etc. — see `roots.PROJECT_MARKERS`),
+auto-index *each child* as its own root rather than indexing the
+anchor as one big index. Same logic also extends walk-down: if
+discovery found one indexed sub-project but other marker'd siblings
+aren't yet indexed, auto-index those too so the multi-root response
+covers everything. Marker presence is the signal that lets us
+distinguish a real monorepo parent from a regular repo where
+`src/` and `tests/` happen to both have source — neither has a
+project marker, so anchor-bootstrap wins as before.
+
 ---
 
 ## Workflow

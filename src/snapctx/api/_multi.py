@@ -376,6 +376,7 @@ def map_repo_multi(
     *,
     depth: int = 1,
     prefix: str | None = None,
+    mode: str = "lean",
     anchor: Path | None = None,
 ) -> dict:
     """Run ``map_repo`` on each root and return one section per root.
@@ -389,12 +390,13 @@ def map_repo_multi(
 
     if not roots:
         return {
-            "depth": depth, "roots": [], "file_count": 0, "symbol_count": 0,
+            "depth": depth, "mode": mode, "roots": [],
+            "file_count": 0, "symbol_count": 0,
             "hint": "No indexed roots.",
         }
 
     ok, errors = _fan_out(
-        lambda r: map_repo(root=r, depth=depth, prefix=prefix),
+        lambda r: map_repo(root=r, depth=depth, prefix=prefix, mode=mode),
         roots, anchor=anchor,
     )
 
@@ -414,6 +416,7 @@ def map_repo_multi(
 
     payload: dict = {
         "depth": depth,
+        "mode": mode,
         "roots": per_root,
         "file_count": total_files,
         "symbol_count": total_symbols,

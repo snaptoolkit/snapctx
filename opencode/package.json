@@ -1,0 +1,16 @@
+{
+  "name": "opencode",
+  "version": "1.0.0",
+  "description": "Drop-in config that wires every snapctx operation into [opencode](https://opencode.ai) as a native tool, plus a global `AGENTS.md` ruleset that biases the model toward `snapctx_*` over `grep`/`read`/`glob`/`edit`.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.4.10"
+  }
+}

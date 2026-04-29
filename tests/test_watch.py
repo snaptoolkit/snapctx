@@ -45,10 +45,10 @@ def test_debounce_coalesces_rapid_events(tmp_path: Path) -> None:
 
 
 def test_only_supported_extensions_trigger(tmp_path: Path) -> None:
-    """A .txt save must not schedule a re-index."""
+    """A .log save (no parser) must not schedule a re-index."""
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "readme.txt").write_text("hello")
+    (root / "noise.log").write_text("hello")
     index_root(root)
 
     fired = []
@@ -59,7 +59,7 @@ def test_only_supported_extensions_trigger(tmp_path: Path) -> None:
             self.src_path = str(p)
             self.is_directory = False
 
-    handler.on_any_event(E(root / "readme.txt"))
+    handler.on_any_event(E(root / "noise.log"))
     time.sleep(0.3)
     assert fired == []
 

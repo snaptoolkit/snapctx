@@ -21,6 +21,14 @@ rarely needed in practice and the cost of scanning a deep ``node_modules``
 or ``.venv`` for ``.snapctx`` dirs isn't worth it. A user with apps nested
 under ``apps/web``, ``apps/api`` should index from ``apps/`` or invoke
 each separately.
+
+The CLI complements discovery with **project-marker** auto-indexing: if
+the anchor has multiple immediate-child dirs that look like distinct
+sub-projects (each with a top-level ``pyproject.toml`` / ``package.json``
+/ similar), unindexed siblings are auto-indexed so a single invocation
+from the parent of a monorepo gives a comprehensive multi-root view.
+``find_subproject_dirs`` and ``has_project_marker`` are the helpers used
+for that detection — discovery itself stays index-only.
 """
 
 from __future__ import annotations
@@ -30,6 +38,57 @@ from pathlib import Path
 from snapctx.index import db_path_for
 
 _MAX_WALK_UP = 20  # Hard ceiling — we should never need this many levels.
+
+# Files whose presence at a directory's top level marks it as a distinct
+# sub-project. Used to decide whether to auto-index siblings of an indexed
+# child (monorepo parent) vs. treat the parent as one repo. Must be a strong
+# signal — a stray ``package.json`` in a fixture dir would falsely register.
+# Empirically, every common ecosystem's project root has at least one of
+# these, and incidental occurrences are rare in non-project dirs.
+PROJECT_MARKERS = (
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "Gemfile",
+    "build.gradle",
+    "build.gradle.kts",
+    "pom.xml",
+    "composer.json",
+    "mix.exs",
+)
+
+
+def has_project_marker(directory: Path) -> bool:
+    """``True`` if ``directory`` has a top-level project-marker file."""
+    return any((directory / m).is_file() for m in PROJECT_MARKERS)
+
+
+def find_subproject_dirs(anchor: Path) -> list[Path]:
+    """Return immediate-child dirs of ``anchor`` that look like sub-projects.
+
+    A "sub-project" is a directory with at least one ``PROJECT_MARKERS``
+    file at its top level. Hidden dirs (``.git``, ``.venv``…) are skipped.
+    Result is sorted by name for stable ordering.
+
+    Used to decide multi-root behavior at a monorepo parent: if the
+    anchor isn't itself a project but ≥2 children are, we treat them as
+    independent roots and index each separately rather than indexing the
+    parent as one big root.
+    """
+    if not anchor.is_dir():
+        return []
+    try:
+        children = sorted(anchor.iterdir())
+    except OSError:
+        return []
+    out: list[Path] = []
+    for child in children:
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if has_project_marker(child):
+            out.append(child.resolve())
+    return out
 
 
 def discover_roots(start: str | Path) -> list[Path]:
