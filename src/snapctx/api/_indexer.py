@@ -47,10 +47,21 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
     idx = Index(db_path_for(root_path))
     counts = {"scanned": 0, "updated": 0, "skipped": 0, "symbols": 0, "removed": 0}
     moved = False
+    parser_version_rebuilt = False
 
     try:
         if force:
             idx.wipe_all()
+        # Parser-version drift: SHA-keyed incremental indexing skips
+        # files whose bytes haven't changed, but a parser upgrade can
+        # change what gets emitted for the SAME bytes (e.g. issue #21
+        # made module symbols mandatory). When the stored version
+        # doesn't match the current parser, wipe so the walk below
+        # reparses every file against fresh code instead of leaving
+        # the old rows in place forever.
+        if idx.parser_version_outdated:
+            idx.wipe_all()
+            parser_version_rebuilt = True
         # If the project was renamed/moved on disk, every stored absolute
         # path is now stale. Detect via a sample row's prefix and wipe so
         # the rebuild below repopulates with current paths. Cheaper than
@@ -90,6 +101,7 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
         demoted = idx.demote_unresolved_calls()
         idx.promote_self_calls()
         embedded = _embed_missing(idx)
+        idx.stamp_parser_version()
     finally:
         idx.close()
 
@@ -103,6 +115,7 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
         "calls_demoted": demoted,
         "symbols_embedded": embedded,
         "root_moved": moved,
+        "parser_version_rebuilt": parser_version_rebuilt,
     }
 
 
@@ -165,6 +178,8 @@ def index_vendor_package(
         # DB no longer resolve. Wipe and rebuild instead of dragging stale
         # rows forward.
         moved = _wipe_if_root_moved(idx, pkg_path)
+        if idx.parser_version_outdated:
+            idx.wipe_all()
 
         for file in iter_source_files(pkg_path, cfg):
             file_str = str(file.resolve())
@@ -183,6 +198,7 @@ def index_vendor_package(
         demoted = idx.demote_unresolved_calls()
         idx.promote_self_calls()
         embedded = _embed_missing(idx)
+        idx.stamp_parser_version()
     finally:
         idx.close()
 

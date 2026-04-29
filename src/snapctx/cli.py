@@ -296,6 +296,14 @@ def _refresh_indexes(roots: list[Path]) -> None:
             continue
         updated = summary["files_updated"]
         removed = summary["files_removed"]
+        rebuilt = summary.get("parser_version_rebuilt", False)
+        label = f" ({r.name})" if multi else ""
+        if rebuilt:
+            sys.stderr.write(
+                f"snapctx: parser upgraded since last index{label} — "
+                f"rebuilt from scratch ({updated} files re-parsed).\n"
+            )
+            continue
         if not (updated or removed):
             continue
         parts = []
@@ -303,7 +311,6 @@ def _refresh_indexes(roots: list[Path]) -> None:
             parts.append(f"{updated} updated")
         if removed:
             parts.append(f"{removed} removed")
-        label = f" ({r.name})" if multi else ""
         sys.stderr.write(
             f"snapctx: refreshed index{label} — {', '.join(parts)}\n"
         )

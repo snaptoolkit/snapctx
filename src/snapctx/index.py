@@ -19,6 +19,18 @@ from typing import Iterator
 from snapctx.qname import identifier_parts
 from snapctx.schema import Call, Import, ParseResult, Symbol
 
+# Bump whenever a parser change affects what symbols/calls/imports are
+# emitted for an UNCHANGED source file. SHA-keyed incremental reindex
+# alone won't pick up such changes — files whose bytes match the
+# stored SHA would skip the parser entirely. ``index_root`` reads
+# ``PRAGMA user_version`` and, on mismatch, wipes the index so the
+# next pass reparses everything against the current parser.
+#
+# Version log:
+#   1 — initial format (implicit before this stamp existed).
+#   2 — module symbols emitted unconditionally (issue #21 / #22).
+INDEX_PARSER_VERSION = 2
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     path          TEXT PRIMARY KEY,
@@ -129,6 +141,23 @@ class Index:
         # work is sub-second on normal repos. See issue #10.
         self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.executescript(SCHEMA)
+        # Compare the index's parser version against the running code.
+        # ``user_version=0`` is the SQLite default — treated as "older
+        # than 1" so freshly created indexes match the current code
+        # but pre-stamp indexes auto-trigger a rebuild on the next
+        # ``index_root`` pass.
+        stored_version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        self.parser_version_outdated = stored_version != INDEX_PARSER_VERSION
+
+    def stamp_parser_version(self) -> None:
+        """Mark the index as written by the current parser version.
+
+        Called after ``index_root`` has wiped or rebuilt to the
+        current parser's output. Subsequent opens will see a matching
+        version and skip the rebuild trigger.
+        """
+        self.conn.execute(f"PRAGMA user_version = {INDEX_PARSER_VERSION}")
+        self.parser_version_outdated = False
 
     def close(self) -> None:
         self.conn.close()

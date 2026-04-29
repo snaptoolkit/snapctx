@@ -45,6 +45,22 @@ def main() -> int:
             print(json.dumps({"error": f"unknown op: {op}"}))
             return 2
 
+        # Mirror the CLI's pre-query auto-refresh so session-tool reads
+        # also pick up file changes and parser-version upgrades. Without
+        # this, an old index built before a parser bump would keep
+        # serving stale rows for read ops (search/source/expand) until
+        # the user happened to invoke a write op or the CLI directly.
+        # Skipped for ``index_root`` itself (would recurse) and for
+        # vendor-scoped paths the API already guards.
+        if op != "index_root":
+            try:
+                api.index_root(root)
+            except Exception:
+                # Refresh failures shouldn't take down the actual op —
+                # the dispatched fn will surface its own error if the
+                # index is genuinely unusable.
+                pass
+
         # Every snapctx write op accepts ``root=`` as a kwarg.
         result = fn(root=root, **args)
         print(json.dumps(result, default=str))
