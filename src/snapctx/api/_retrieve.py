@@ -71,15 +71,31 @@ def outline(
     idx = open_index(root_path, scope=scope)
     try:
         rows = idx.symbols_in_file(file_str)
+        # Distinguish "file unknown to index" from "file indexed, zero symbols".
+        # Same empty-rows result, but very different remediation. See issue #12.
+        is_indexed = idx.current_sha(file_str) is not None
     finally:
         idx.close()
 
     if not rows:
-        return {
-            "file": file_str,
-            "symbols": [],
-            "hint": f"No symbols indexed for {file_str}. Did you run `snapctx index` on this root?",
-        }
+        if not target.exists():
+            hint = (
+                f"File {file_str} does not exist. Check the path or, if it "
+                "was just created, re-run a snapctx query to refresh the index."
+            )
+        elif is_indexed:
+            hint = (
+                f"File exists and is indexed but contains no symbols snapctx "
+                "extracts (e.g. type-only modules, top-level constants only, "
+                "or a parser-unsupported file type). Use `snapctx_grep` or "
+                "read the file directly for raw contents."
+            )
+        else:
+            hint = (
+                f"No symbols indexed for {file_str}. Did you run `snapctx "
+                "index` on this root?"
+            )
+        return {"file": file_str, "symbols": [], "hint": hint}
 
     by_qname = {row["qname"]: row for row in rows}
     tree = _nest_symbols(
