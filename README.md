@@ -208,81 +208,109 @@ snapctx index /path/to/your/repo
 
 ## Use it from your AI agent
 
-snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Cursor's terminal, custom Agent SDK loops) can use it via `Bash` calls. Agents tend to default to `Grep` + `Read` out of habit — paste this into your project's `CLAUDE.md` / `AGENTS.md` to redirect them:
+snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, opencode, Cursor's terminal, custom Agent SDK loops) can use it via `Bash` calls. Most agents default to `Grep` + `Read` + `Edit` out of habit — paste the block below into your project's `CLAUDE.md` / `AGENTS.md` (or your global one at `~/.config/opencode/AGENTS.md`, `~/.claude/CLAUDE.md`) to redirect them.
+
+The block is language-agnostic. snapctx supports the same operations across **Python, TypeScript, TSX, JSX, shell, Markdown, TOML, YAML, JSON, and `.env`** — every command below works the same regardless of which language the file is in.
 
 ```markdown
-## Code exploration with snapctx
+## snapctx — your code-navigation and code-manipulation toolbox
 
-For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It uses fewer tokens, fewer tool calls (1 vs 11–50), and guarantees 100% coverage on exhaustive audits where `Grep` + `Read` chains miss the long tail.
+This repo has a `.snapctx/index.db` (auto-built on first query). snapctx parses the codebase into a symbol graph and exposes both **read** ops (search / inspect) and **write** ops (edit / insert / rename / move). Prefer it over `Grep`, `Read`, `Glob`, `Edit`, and `Write` for anything code-related — fewer tool calls, fewer tokens, qname-addressed edits with syntax pre-flight.
 
-**Why it works**: snapctx parses the codebase into a symbol graph (functions, classes, components, constants, calls, imports — across Python, TypeScript, shell, **plus markdown headings, TOML/YAML/JSON keys, and `.env` variables**), runs hybrid lexical+semantic search, and returns top symbols with source bodies, a depth-2 call-path trace (callees-of-callees + callers-of-callers), constant-alias resolution, and file outlines — usually enough to answer in one call. For raw-text patterns outside symbol bodies (comments, prose, configs), `snapctx grep` walks every text file with the same gitignore/vendor filters and annotates code-file hits with the enclosing qname.
+### What snapctx parses
 
-### First move
+| Language | Extensions | Symbols extracted | Calls / imports |
+|---|---|---|---|
+| Python | `.py`, `.pyi` | functions, methods, classes, constants, modules | yes (call graph + import graph) |
+| TypeScript / TSX | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | functions, methods, classes, components, types, interfaces, constants | yes (call graph + import graph) |
+| Shell | `.sh`, `.bash` | functions, module-level | intra-file calls + `source`/`.` imports |
+| Markdown | `.md`, `.markdown` | headings (nested as qnames) | — |
+| TOML | `.toml` | top-level keys + table headers | — |
+| YAML | `.yaml`, `.yml` | top-level keys | — |
+| JSON | `.json` | top-level keys | — |
+| Env | `.env` | `KEY=value` variables | — |
 
-`snapctx context "<query>"` — query can be natural language, an identifier, or an exact qname (`app.auth:SessionManager.refresh`).
+Every symbol has a stable **qname** of the form `<module-path>:<member-path>` (Python: `app.auth:SessionManager.refresh`; TS: `src/auth/session:SessionManager.refresh`; Markdown: `README.md:Setup.Quickstart`; TOML: `pyproject.toml:project.version`).
 
-Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outlines[]`, and a `hint`. Typical response 3–10 k tokens.
+### Read ops — pick by question shape
 
-**Audit-aware**: phrasings like *"audit every transaction.atomic site"*, *"list every useState call"*, *"every place that uses X"* trigger a parallel exhaustive `find` on the literal — the response gets a `find_results` block listing every site (file:line, qname, matching line). Saves you from having to know whether to use `context` or `find` for cross-cutting audit questions.
-
-### Drill-down (only if `context` wasn't enough)
-
-- `snapctx search "<query>"` — top-K ranked symbols. Add `--with-bodies` to inline source; add `--also <term2> [...]` to batch related terms.
-- `snapctx find "<literal>" --with-bodies` — **exhaustive** substring enumeration across all indexed *symbol bodies*. Use this for "every place that uses X" audits where ranked search would cap the long tail. Add `--with-callers` to also attach the deduped depth-1 caller list to each hit (audit + impact analysis in one call).
-- `snapctx grep "<pattern>"` — literal (or `--regex`) search across **every** text file under the root: code, markdown, configs (TOML/YAML/JSON/.env), docs. Same gitignore + vendor + binary filters the indexer uses. Code-file hits are annotated with the enclosing-symbol qname so you can pivot to `snapctx source`. Use this instead of an external `grep`/`rg` for env vars, URLs, TODOs, prose in README.md, config keys — anything `find` (symbol-body-only) misses.
-- `snapctx map --prefix src/` — query-free *orientation* call. Returns the whole code tree (every file's top-level symbols + signatures + 1-line docstrings + decorators, grouped by directory) so you can build a mental model before you have a specific question. `--depth 2` adds class methods. Use this when landing in an unfamiliar repo or area; for actual lookups, follow with `search` or `context`.
-- `snapctx expand <qname> --direction callees|callers|both --depth 1|2` — call-graph neighborhood.
-- `snapctx outline <path>` — symbol tree of a single file or directory; add `--with-bodies` to inline every symbol's source. Works on markdown (heading tree), TOML/YAML/JSON/.env (key list), code (full structural tree).
-- `snapctx source <qname> --with-neighbors` — full body + resolved callee signatures.
-
-### Code manipulation (write ops)
-
-When you need to *change* code, prefer these over the agent's built-in `Edit` / `Write` for any symbol-level change. Every write op runs a syntax pre-flight (Python `ast.parse`, TS/TSX tree-sitter) and is per-file atomic, so a malformed edit refuses to land instead of corrupting the file. You don't have to read the file first — qname addressing is enough.
-
-| Task | Command | Notes |
+| Question | Command | Returns |
 |---|---|---|
-| Replace one function/class body | `snapctx edit <qname> <body_file>` (or `--stdin`) | Refuses if the file's SHA drifted since indexing — re-query for fresh coordinates. |
-| Insert a NEW top-level symbol next to an anchor | `snapctx insert <anchor_qname> <body_file> [--position before\|after]` | Same staleness + syntax guards as `edit`. |
-| Multi-symbol consistency change in one shot | `edit_symbol_batch(edits=[…])` (Python API) | Per-file atomic — if any edit in a file fails syntax pre-flight, NO edits to that file land (other files succeed). |
-| Delete a function/class | `delete_symbol(qname)` (Python API) | Trims surrounding blank lines to preserve PEP-8 spacing. |
-| Add or remove an import | `add_import(file, statement)` / `remove_import(file, statement)` (Python API) | Idempotent. Docstring-aware: `add_import` places the line after a leading module docstring, not above it. |
-| Create / delete / move a file | `create_file(path, content)` / `delete_file(path)` / `move_file(src, dst)` (Python API) | `create_file` runs syntax pre-flight; `move_file` returns `importing_files` so the agent can drive coordinated import-path rewrites in callers. |
-| Rename a symbol everywhere | `rename_symbol(old_qname, new_name)` (Python API) | Coordinated: changes the def + every caller body + every import line. Refuses on collision. Filtered by the def's module suffix to avoid renaming unrelated namesakes elsewhere. |
+| "How does X work?" / "Where does Y live?" | `snapctx context "<query>"` | Top symbols + their full source + callees + callers + file outlines (one shot, ~3–10 k tokens). **Audit-aware**: phrasings like *"every place that uses X"* trigger an exhaustive `find` in parallel and attach the results. |
+| "What's in this repo?" (orientation) | `snapctx map [--prefix src/] [--depth 1\|2]` | Repo-wide table of contents — every indexed file's top-level symbols grouped by directory. `--depth 2` adds class methods. **Always your first call in an unfamiliar repo.** |
+| "Find a symbol by name or concept (ranked)" | `snapctx search "<query>" -k 10` | Top-K ranked symbols + signatures (no bodies). Add `--with-bodies` to inline; `--also <term2>` to batch keywords; `--kind function\|method\|class\|component\|interface\|type\|constant` to filter. |
+| "What's in this file/dir?" | `snapctx outline <path>` | Symbol tree (heading tree for Markdown, key list for configs, structural tree for code). `--with-bodies` to inline. |
+| "Show me this exact symbol's source" | `snapctx source <qname>` | Full body. `--with-neighbors` adds resolved callee signatures. |
+| "Who calls X? What does X call?" | `snapctx expand <qname> --direction callees\|callers\|both --depth 1\|2` | Call-graph neighborhood. |
+| "Every place that uses literal L (inside symbols)" | `snapctx find "<literal>"` | Exhaustive — no top-K cap. `--with-bodies` inlines containing symbols; `--with-callers` adds depth-1 caller lists per hit (audit + impact analysis in one call). |
+| "Find raw text anywhere — comments, prose, configs, env files" | `snapctx grep "<pattern>" [--regex] [-i] [--in <path>] [-C N]` | Literal or regex over **every** gitignore-respected text file. Code-file hits are annotated with `qname` so you can pivot straight to `snapctx source`. |
 
-The Python-API-only ops are exposed by importing `snapctx.api`. CLI subcommands cover the two most common cases (`edit`, `insert`); if you're driving snapctx from a TypeScript or other-language agent, shell into a small Python helper that imports the API.
+### Write ops — qname-addressed, syntax-checked, atomic per file
 
-**Workflow recipe** — "rename `calculate_total` to `compute_total` everywhere":
+You don't need to read a file before editing it. Every write op:
+- accepts a **qname** (or path) as the address — no line-number bookkeeping;
+- runs a **syntax pre-flight** before writing (Python `ast.parse`, TS/TSX tree-sitter) and refuses edits that would leave the file unparseable;
+- is **per-file atomic** — if any change in a file fails the pre-flight, none of that file's changes land (other files succeed);
+- guards against **stale coordinates** — refuses if the file's SHA has drifted since the last index, telling you to re-query.
+
+CLI exposes `edit` and `insert`; the rest are Python-API-only and called via `from snapctx.api import …`. If you're driving snapctx from a non-Python agent, shell into a tiny `python -c "from snapctx.api import …"` helper.
+
+| Task | Op | Notes |
+|---|---|---|
+| Replace one function / class / method body | `snapctx edit <qname> <body_file>` *or* `edit_symbol(qname, new_body)` | `new_body` is the COMPLETE replacement (def line through last statement). Works for Python and TS/TSX. |
+| Insert a NEW top-level symbol next to an existing one | `snapctx insert <anchor_qname> <body_file> [--position before\|after]` *or* `insert_symbol(file, anchor_qname, position, body)` | Use to add a function / class / type alias / component without rewriting the file. |
+| Cross-symbol consistency change in one shot | `edit_symbol_batch(edits=[{qname, new_body}, …])` | Per-file atomic. Use for "rename a parameter everywhere", "add tracing to N functions", etc. |
+| Delete a function / class / method | `delete_symbol(qname)` | Trims surrounding blank lines so PEP-8 / Prettier spacing stays clean. |
+| Add or remove an import | `add_import(file, statement)` / `remove_import(file, statement)` | Idempotent (no-op if already present / absent). For Python, docstring-aware: `add_import` lands AFTER a leading module docstring, not above it. |
+| Create / delete a file | `create_file(path, content)` / `delete_file(path)` | `create_file` runs syntax pre-flight on parser-supported languages. `delete_file` refuses paths outside the root. |
+| Move / rename a file | `move_file(src, dst)` | Returns `importing_files` — iterate over them and drive coordinated import-path rewrites with `add_import` / `remove_import` (or `edit_symbol`). |
+| Rename a symbol everywhere | `rename_symbol(old_qname, new_name)` | Coordinated: the def + every caller body + every import line are rewritten in one op. Word-boundary substitution. Refuses on collision (target qname exists). Filtered by the def's module suffix so unrelated namesakes elsewhere are NOT touched. |
+
+**Worked example — coordinated rename across def, callers, and imports:**
 
 ```python
 from snapctx.api import rename_symbol
-rename_symbol("pkg.core:calculate_total", "compute_total", root=".")
-# Returns {old_qname, new_qname, edits_applied, imports_updated, edits_skipped, ...}
+result = rename_symbol("pkg.core:calculate_total", "compute_total", root=".")
+# {old_qname, new_qname, edits_applied, imports_updated, edits_skipped, files_touched}
 ```
 
-This is one call vs the agent's usual loop of: find every caller via grep → read each file → edit each one by hand → fix the imports separately → re-run grep to confirm. Coordinated rename is ~6× fewer tokens and never partially applies (per-file atomicity).
+One call replaces: grep for caller files → read each → edit each by hand → fix imports separately → re-run grep to confirm. ~6× fewer tokens; never partially applies.
+
+### Pick the right tool — decision rules
+
+1. **Always start with `snapctx_map`** in an unfamiliar repo, before anything else. One call shows you the whole layout.
+2. For a question with a concept ("how does auth work", "where is the rate limiter") → `snapctx context`.
+3. For a known symbol name → `snapctx search`, then `snapctx source <qname>` for the body.
+4. For "what calls / is called by X" → `snapctx expand`.
+5. For a literal you know is in code → `snapctx find` (exhaustive, scoped to symbol bodies).
+6. For a literal that might live outside symbols (URLs, env names, TODO markers, README prose, config keys) → `snapctx grep`.
+7. To **change** code → `snapctx edit` / `insert` / `delete_symbol` / `rename_symbol` / `edit_symbol_batch`. Don't read-then-edit unless you genuinely need the surrounding file context.
+
+### When to fall back to the agent's built-in tools
+
+- **`Grep`** — only for filename-pattern globs (e.g. "find every `*_test.py`"). Content search is covered by `snapctx_grep`.
+- **`Read`** — only when you need a *whole file* end-to-end (rare). `snapctx_outline` shows structure; `snapctx_source <qname>` gives you any symbol; `snapctx_grep` returns matches with N lines of context.
+- **`Glob`** — same as `Grep`: only for filename patterns. Use `snapctx_map` to see the directory tree.
+- **`Edit`/`Write`** — only for non-code text snapctx doesn't parse (binary configs, lockfiles, generated artifacts).
 
 ### What just works
 
-- **No setup**: queries auto-index on first use; auto-refresh on subsequent runs picks up your edits.
+- **No setup**: first query auto-indexes; subsequent queries auto-refresh from changed file SHAs.
 - **No `--root`**: snapctx walks up from CWD to find the nearest `.snapctx/index.db`.
-- **Monorepos**: launching from a parent of indexed sub-projects fans out queries; each result has a `root` field (`"backend"` / `"frontend"`).
-- **Third-party code on demand**: prefix a query with a package name (`"django: queryset filter"`) to route to that package's own isolated index. First use ingests the package; subsequent calls are zero-cost. No prefix → repo only. `--pkg <name>` is the equivalent for ops without a free-text query (`source`, `outline`, `expand`).
-- **Filters**: `--kind function|method|class|component|constant|interface|type` to narrow results.
+- **Monorepos**: launching from a parent of indexed sub-projects fans out queries in parallel; each result is tagged with a `root` field (e.g. `"backend"` / `"frontend"`).
+- **Vendor / generated noise filtered**: `node_modules`, `.venv`, minified bundles, `dist/`, gitignored paths — all skipped by default.
+- **Third-party code on demand**: prefix a query with a package name (`"django: queryset filter"`) to route to that package's own isolated index. First use ingests the package; subsequent calls are zero-cost. `--pkg <name>` is the equivalent for ops without a free-text query (`source`, `outline`, `expand`).
 
-### When to fall back to Grep
+### Output format
 
-Almost never. The `Grep` tool that comes with most agents is now redundant for this repo:
-
-- Symbol-body literals (`"transaction.atomic"`, `"useState"`) → `snapctx find` — exhaustive, with qname per hit.
-- Anything outside symbol bodies (URL routes, TODO/FIXME, env var names, markdown headings, config keys, comments) → `snapctx grep` — walks every text file, annotates code-file hits with qname.
-
-Reach for the agent's built-in `Grep` only for filename-pattern globs (e.g. "find every `*_test.py`"), which snapctx doesn't model.
+Every command returns JSON on stdout (pipe to `jq`). Stderr carries progress / refresh notes — they don't pollute the JSON.
 
 ### Tips
 
-- If `context` returns the wrong area, paraphrase the query — hybrid mode adapts ranker weights to query style.
-- If you need just signatures (no bodies), use `search` instead of `context` to save tokens.
-- `--mode lexical` skips the embedder (~50 ms cold) — use when the query is an exact identifier.
+- `snapctx context` paraphrasing rule: if the response targets the wrong area, rephrase the query — hybrid mode adapts ranker weights to query style (identifiers vs concepts).
+- `--mode lexical` skips the embedder (~50 ms saved cold) — use when the query is an exact identifier.
+- For just signatures (no bodies), prefer `search` over `context` to save tokens.
+- All write ops can be tested against a throwaway clone before they touch your live tree — clone the repo to `/tmp`, run them there, diff.
 ```
 
 ---
