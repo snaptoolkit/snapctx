@@ -68,6 +68,8 @@ def search_code(
     root_path = Path(root).resolve()
     queries: list[str] = [query] + list(also or [])
     idx = open_index(root_path, scope=scope)
+    kind_filter_dropped = False
+    actual_kinds: list[str] = []
     try:
         # Per-term ranked pairs, then merge-by-best-score across terms so
         # one call can serve ``audit "X" --also Y --also Z`` natively.
@@ -80,6 +82,26 @@ def search_code(
             pairs = per_term_pairs[0]
         else:
             pairs = _merge_pairs(per_term_pairs, k=k)
+
+        # Common agent failure: pick wrong kind ("function" for what's
+        # really a class method, "type" for what's an interface). Without
+        # a retry, search returns nothing and the agent re-queries blind.
+        # On an empty result with kind set, retry without it and surface
+        # the actual kinds in the hint so the agent knows what to filter
+        # next time.
+        if kind is not None and not pairs:
+            per_term_pairs = []
+            for q in queries:
+                per_term_pairs.append(
+                    _rank_one(idx, q, k=k, kind=None, mode=mode)
+                )
+            if len(per_term_pairs) == 1:
+                pairs = per_term_pairs[0]
+            else:
+                pairs = _merge_pairs(per_term_pairs, k=k)
+            if pairs:
+                kind_filter_dropped = True
+                actual_kinds = sorted({row["kind"] for row, _ in pairs})
 
         results = []
         for row, score in pairs:
@@ -103,14 +125,28 @@ def search_code(
     finally:
         idx.close()
 
+    if kind_filter_dropped:
+        kinds_str = ", ".join(repr(k) for k in actual_kinds)
+        hint = (
+            f"No results with kind={kind!r}. Returning matches with other "
+            f"kinds: {kinds_str}. In Python, class members are kind='method' "
+            f"(not 'function'); in TypeScript, exported types are 'type' or "
+            f"'interface' (not 'class')."
+        )
+    else:
+        hint = search_hint(
+            results, query=query, with_bodies=with_bodies, also_used=bool(also),
+        )
+
     response: dict = {
         "query": query,
         "mode": mode,
         "results": results,
-        "hint": search_hint(
-            results, query=query, with_bodies=with_bodies, also_used=bool(also),
-        ),
+        "hint": hint,
     }
+    if kind_filter_dropped:
+        response["kind_filter_dropped"] = True
+        response["actual_kinds"] = actual_kinds
     if also:
         response["also"] = list(also)
     if scope is not None:

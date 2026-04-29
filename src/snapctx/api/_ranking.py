@@ -111,6 +111,9 @@ def hybrid_weights(qclass: str) -> tuple[float, float]:
     return 1.0, 1.5
 
 
+DOC_LANGUAGES = frozenset({"markdown", "html", "text"})
+
+
 def rrf_merge(
     lexical_pairs,
     vector_pairs,
@@ -120,6 +123,7 @@ def rrf_merge(
     lex_weight: float = 1.0,
     vec_weight: float = 1.5,
     test_penalty: float = 0.6,
+    docs_penalty: float = 0.7,
     query: str | None = None,
 ):
     """Weighted Reciprocal Rank Fusion of two ranked lists of (row, score) tuples.
@@ -131,6 +135,13 @@ def rrf_merge(
         module ending in ``.tests`` or starting with ``test_`` get their RRF
         score multiplied by this factor. Agents almost never want a test as
         their top hit, but tests still appear (just demoted).
+      * ``docs_penalty=0.7`` — for natural / mixed queries where at least
+        one *code-language* candidate is in the pool, demote markdown /
+        html / text seeds. The HTML+templates parser indexes prose, so a
+        feature query like "how does X work" otherwise pulls a README
+        heading above the implementation. The penalty is conditional:
+        when only doc seeds exist (e.g. "where is the install guide"
+        in a docs-only repo), no penalty applies and docs win cleanly.
 
     When ``query`` is a single identifier-shaped token (``Button``, ``url_for``,
     ``StateCreator``), symbols whose simple name equals that token receive a
@@ -139,6 +150,8 @@ def rrf_merge(
     *reference* the identifier outrank the canonical definition.
     """
     name_match_token = _exact_name_token(query)
+    qclass = classify_query(query) if query else "mixed"
+    docs_demotion_active = qclass in ("natural", "mixed")
 
     scores: dict[str, float] = {}
     kept: dict[str, object] = {}
@@ -157,11 +170,33 @@ def rrf_merge(
         for q in list(scores):
             if _simple_name(q) == name_match_token:
                 scores[q] += bonus
+    has_code_seed = any(
+        _row_language(row) not in DOC_LANGUAGES for row in kept.values()
+    )
     for q, row in kept.items():
         if looks_like_test(q, row["file"]):
             scores[q] *= test_penalty
+        if (
+            docs_demotion_active
+            and has_code_seed
+            and _row_language(row) in DOC_LANGUAGES
+        ):
+            scores[q] *= docs_penalty
     ordered = sorted(scores.items(), key=lambda kv: -kv[1])
     return [(kept[q], s) for q, s in ordered[:limit]]
+
+
+def _row_language(row) -> str:
+    """``row['language']`` if present; ``''`` otherwise.
+
+    Some test fixtures and call sites pass mock rows that don't carry a
+    language column, so we tolerate the missing field instead of
+    KeyError-ing — better to skip the docs check than corrupt the merge.
+    """
+    try:
+        return row["language"] or ""
+    except (KeyError, IndexError, TypeError):
+        return ""
 
 
 def _exact_name_token(query: str | None) -> str | None:

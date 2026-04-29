@@ -378,3 +378,140 @@ def test_index_root_force_reindexes_unchanged_files(tmp_path: Path) -> None:
     summary3 = index_root(root, force=True)
     assert summary3["files_updated"] == 1
     assert summary3["files_unchanged"] == 0
+
+
+def test_rrf_docs_penalty_demotes_doc_seeds_when_code_seeds_exist() -> None:
+    """Real-world bias from agent-on-biblereader: a "how does X work" query
+    pulled README headings above the implementation because the HTML/Markdown
+    parsers index prose. When the candidate pool contains at least one
+    code-language seed, demote markdown/html/text seeds.
+    """
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str, file: str, language: str) -> dict:
+        return {"qname": qname, "file": file, "language": language}
+
+    # Without the penalty, the doc would win because both lists rank it #1.
+    lex = [
+        (row("docs/translation-pipeline.md:Pipeline", "/r/docs/p.md", "markdown"), -5.0),
+        (row("backend.commands.translate:run_translation", "/r/backend/c.py", "python"), -3.0),
+    ]
+    vec = [
+        (row("docs/translation-pipeline.md:Pipeline", "/r/docs/p.md", "markdown"), 0.78),
+        (row("backend.commands.translate:run_translation", "/r/backend/c.py", "python"), 0.72),
+    ]
+    merged = rrf_merge(lex, vec, limit=2, query="how does the translation pipeline work")
+    assert merged[0][0]["qname"] == "backend.commands.translate:run_translation"
+
+
+def test_rrf_docs_penalty_off_when_no_code_seeds_present() -> None:
+    """Doc-only queries (e.g. searching across a docs-only repo) must not be
+    penalized — there's nothing to demote them in favor of."""
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str, language: str) -> dict:
+        return {"qname": qname, "file": "/r/docs/x.md", "language": language}
+
+    lex = [(row("docs/install.md:Install", "markdown"), -5.0), (row("docs/setup.md:Setup", "markdown"), -3.0)]
+    vec = [(row("docs/install.md:Install", "markdown"), 0.82), (row("docs/setup.md:Setup", "markdown"), 0.71)]
+    merged = rrf_merge(lex, vec, limit=2, query="install guide")
+    # Both are docs — top result is the lex+vec winner regardless of language.
+    assert merged[0][0]["qname"] == "docs/install.md:Install"
+
+
+def test_rrf_docs_penalty_off_for_identifier_queries() -> None:
+    """Identifier queries (single token like ``run_translation``) must not
+    demote docs — the user is asking by name, and a docs heading literally
+    titled ``run_translation`` is a legitimate hit."""
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str, language: str) -> dict:
+        return {"qname": qname, "file": "/r/x.py" if language == "python" else "/r/d.md",
+                "language": language}
+
+    lex = [
+        (row("docs/api.md:run_translation", "markdown"), -1.0),  # very strong doc match
+        (row("backend.cmd:run_translation", "python"), -3.0),
+    ]
+    vec = [
+        (row("docs/api.md:run_translation", "markdown"), 0.85),
+        (row("backend.cmd:run_translation", "python"), 0.70),
+    ]
+    merged = rrf_merge(lex, vec, limit=2, query="run_translation")
+    # Identifier query → docs penalty does NOT fire; docs wins because lex+vec
+    # both rank it first. (The name-match bonus is symmetric.)
+    assert merged[0][0]["qname"] == "docs/api.md:run_translation"
+
+
+def test_rrf_docs_penalty_handles_rows_missing_language() -> None:
+    """Older mock rows / non-symbol rows might not carry a 'language' key —
+    don't crash, just skip the demotion check for those."""
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str) -> dict:
+        return {"qname": qname, "file": "/x.py"}  # no 'language'
+
+    lex = [(row("a:foo"), -3.0), (row("a:bar"), -2.0)]
+    vec = [(row("a:bar"), 0.7), (row("a:foo"), 0.6)]
+    merged = rrf_merge(lex, vec, limit=2, query="some natural language query here please")
+    # No crash; just a normal merge.
+    assert {r["qname"] for r, _ in merged} == {"a:foo", "a:bar"}
+
+
+def test_search_with_wrong_kind_retries_and_hints(tmp_path: Path) -> None:
+    """Common failure mode: agent passes ``kind='function'`` for a Python
+    class method (which is actually ``kind='method'``). Search should
+    retry without the kind filter and hint at the actual kinds available.
+    """
+    from snapctx.api import index_root, search_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "models.py").write_text(
+        "class User:\n"
+        "    def get_translation_instructions(self):\n"
+        "        return 'hello'\n"
+    )
+    index_root(root)
+
+    out = search_code("get_translation_instructions", kind="function", root=root, mode="lexical")
+    assert out["results"], "retry should surface the method"
+    assert out.get("kind_filter_dropped") is True
+    assert "method" in out.get("actual_kinds", [])
+    assert "method" in out["hint"].lower()
+    assert "no results with kind='function'" in out["hint"].lower()
+
+
+def test_search_with_correct_kind_does_not_trigger_retry(tmp_path: Path) -> None:
+    """When the kind filter matches at least one symbol, no retry — the
+    response shape stays unchanged for callers that depend on it."""
+    from snapctx.api import index_root, search_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "x.py").write_text(
+        "class C:\n"
+        "    def get_translation_instructions(self):\n"
+        "        return 1\n"
+    )
+    index_root(root)
+
+    out = search_code("get_translation_instructions", kind="method", root=root, mode="lexical")
+    assert out["results"]
+    assert "kind_filter_dropped" not in out
+    assert "actual_kinds" not in out
+
+
+def test_search_with_no_kind_and_no_results_returns_empty_normally(tmp_path: Path) -> None:
+    """No kind filter, no hits → don't fabricate a retry message; just the
+    standard "no matches" hint."""
+    from snapctx.api import index_root, search_code
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "x.py").write_text("def f(): return 1\n")
+    index_root(root)
+
+    out = search_code("nonexistent_thing_xyz", root=root, mode="lexical")
+    assert out["results"] == []
+    assert "kind_filter_dropped" not in out
