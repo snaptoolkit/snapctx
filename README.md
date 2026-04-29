@@ -235,6 +235,32 @@ Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outline
 - `snapctx outline <path>` — symbol tree of a single file or directory; add `--with-bodies` to inline every symbol's source. Works on markdown (heading tree), TOML/YAML/JSON/.env (key list), code (full structural tree).
 - `snapctx source <qname> --with-neighbors` — full body + resolved callee signatures.
 
+### Code manipulation (write ops)
+
+When you need to *change* code, prefer these over the agent's built-in `Edit` / `Write` for any symbol-level change. Every write op runs a syntax pre-flight (Python `ast.parse`, TS/TSX tree-sitter) and is per-file atomic, so a malformed edit refuses to land instead of corrupting the file. You don't have to read the file first — qname addressing is enough.
+
+| Task | Command | Notes |
+|---|---|---|
+| Replace one function/class body | `snapctx edit <qname> <body_file>` (or `--stdin`) | Refuses if the file's SHA drifted since indexing — re-query for fresh coordinates. |
+| Insert a NEW top-level symbol next to an anchor | `snapctx insert <anchor_qname> <body_file> [--position before\|after]` | Same staleness + syntax guards as `edit`. |
+| Multi-symbol consistency change in one shot | `edit_symbol_batch(edits=[…])` (Python API) | Per-file atomic — if any edit in a file fails syntax pre-flight, NO edits to that file land (other files succeed). |
+| Delete a function/class | `delete_symbol(qname)` (Python API) | Trims surrounding blank lines to preserve PEP-8 spacing. |
+| Add or remove an import | `add_import(file, statement)` / `remove_import(file, statement)` (Python API) | Idempotent. Docstring-aware: `add_import` places the line after a leading module docstring, not above it. |
+| Create / delete / move a file | `create_file(path, content)` / `delete_file(path)` / `move_file(src, dst)` (Python API) | `create_file` runs syntax pre-flight; `move_file` returns `importing_files` so the agent can drive coordinated import-path rewrites in callers. |
+| Rename a symbol everywhere | `rename_symbol(old_qname, new_name)` (Python API) | Coordinated: changes the def + every caller body + every import line. Refuses on collision. Filtered by the def's module suffix to avoid renaming unrelated namesakes elsewhere. |
+
+The Python-API-only ops are exposed by importing `snapctx.api`. CLI subcommands cover the two most common cases (`edit`, `insert`); if you're driving snapctx from a TypeScript or other-language agent, shell into a small Python helper that imports the API.
+
+**Workflow recipe** — "rename `calculate_total` to `compute_total` everywhere":
+
+```python
+from snapctx.api import rename_symbol
+rename_symbol("pkg.core:calculate_total", "compute_total", root=".")
+# Returns {old_qname, new_qname, edits_applied, imports_updated, edits_skipped, ...}
+```
+
+This is one call vs the agent's usual loop of: find every caller via grep → read each file → edit each one by hand → fix the imports separately → re-run grep to confirm. Coordinated rename is ~6× fewer tokens and never partially applies (per-file atomicity).
+
 ### What just works
 
 - **No setup**: queries auto-index on first use; auto-refresh on subsequent runs picks up your edits.
