@@ -119,6 +119,15 @@ class Index:
         self.conn.isolation_level = None
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        # Make concurrent writers wait for the active write txn to drain
+        # instead of failing immediately with "database is locked". SQLite's
+        # WAL journal already lets readers run during a write, but writers
+        # still serialize against each other; without a busy timeout the
+        # second writer raises ``OperationalError`` on first contact. Agent
+        # tooling commonly fires multiple write ops in parallel (e.g. several
+        # ``add_import`` calls), so we set a generous timeout — actual reindex
+        # work is sub-second on normal repos. See issue #10.
+        self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.executescript(SCHEMA)
 
     def close(self) -> None:
@@ -441,7 +450,15 @@ class Index:
             yield
             return
         try:
-            self.conn.execute("BEGIN")
+            # IMMEDIATE acquires the RESERVED write lock at txn start rather
+            # than at first write. Two reasons:
+            # (1) ``busy_timeout`` reliably waits at ``BEGIN IMMEDIATE`` —
+            # with plain ``BEGIN`` (DEFERRED), an upgrade collision can
+            # raise ``OperationalError: database is locked`` immediately
+            # under WAL with multiple writer connections (issue #10).
+            # (2) prevents two concurrent writers from both acquiring SHARED,
+            # then deadlocking when each tries to upgrade.
+            self.conn.execute("BEGIN IMMEDIATE")
             yield
             self.conn.execute("COMMIT")
         except Exception:

@@ -262,3 +262,36 @@ def test_move_file_renames_and_reindexes(tmp_path: Path) -> None:
 
     # importing_files surfaces the file that should get its import rewritten.
     assert any("uses.py" in f for f in result["importing_files"])
+
+
+def test_parallel_writes_do_not_raise_database_locked(tmp_path: Path) -> None:
+    """Regression for #10. Multiple concurrent write ops against the same
+    repo were nondeterministically failing with ``OperationalError:
+    database is locked`` because each writer opened its own SQLite
+    connection and the second writer hit the active write txn before
+    SQLite's internal busy timer kicked in. Index now sets
+    ``PRAGMA busy_timeout`` so contended writers wait their turn rather
+    than fail.
+    """
+    import concurrent.futures
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "__init__.py").write_text("")
+    # Several files so each thread targets a different one — same DB,
+    # different file rows. That's the exact contention shape the bug hit.
+    for i in range(8):
+        (repo / "pkg" / f"mod_{i}.py").write_text(
+            "import os\n\n\ndef f():\n    return 1\n"
+        )
+    index_root(repo)
+
+    def add_one(i: int) -> dict:
+        return add_import(f"pkg/mod_{i}.py", "import sys", root=repo)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(add_one, range(8)))
+
+    assert all("error" not in r for r in results), results
+    for i in range(8):
+        assert "import sys" in (repo / "pkg" / f"mod_{i}.py").read_text()
