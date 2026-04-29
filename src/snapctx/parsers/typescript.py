@@ -155,7 +155,21 @@ class _Visitor:
 
         qname = make_qname(self.module, [])
         signature = f"module {self.module}" if self.module else "module"
-        end_line = root.end_point[0] + 1
+        # tree-sitter's ``root.end_point.row`` is the row of the
+        # cursor AFTER the final byte. For a file that ends with
+        # ``\n``, that cursor sits on the (empty) line below the
+        # last line of content, and ``row + 1`` overshoots the
+        # actual content line count by one — which then trips the
+        # write ops' staleness guard ("stored line range 1-N+1 is
+        # outside the file (now N lines)") for whole-module edits
+        # (issue #23). Use the source text's own line count so
+        # ``line_end`` matches what ``edit_symbol`` reconstructs
+        # when it splits the file by ``\n`` and drops the trailing
+        # empty.
+        line_count = self.source.count("\n")
+        if not self.source.endswith("\n") and self.source:
+            line_count += 1
+        end_line = max(1, line_count)
         self.symbols.append(
             Symbol(
                 qname=qname,

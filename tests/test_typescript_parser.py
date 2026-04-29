@@ -380,3 +380,28 @@ def test_index_tsx_collapses_to_directory(tmp_path: Path) -> None:
     # qname becomes ":X"
     c = next(s for s in r.symbols if s.qname.endswith(":X"))
     assert c.qname == ":X"
+
+
+def test_module_symbol_line_end_matches_actual_line_count(tmp_path: Path) -> None:
+    """Regression for issue #23: tree-sitter's ``root.end_point.row``
+    sits AFTER the trailing newline, so ``end_point.row + 1`` overshoots
+    the real content line count by one when the file ends with ``\\n``.
+    That overshoot used to flow into the module symbol's ``line_end``,
+    and any whole-file edit then tripped the staleness guard ("stored
+    line range 1-N+1 is outside the file (now N lines)") on the very
+    next call."""
+    src = (
+        "import { foo } from \"./utils\"\n"
+        "\n"
+        "export function run(id: string): void {\n"
+        "  foo(id)\n"
+        "}\n"
+    )
+    expected_lines = src.count("\n")  # 5 newlines → 5 content lines
+    r = _parse(tmp_path, "planningActions.ts", src)
+    mod = next(s for s in r.symbols if s.kind == "module")
+    assert mod.line_start == 1
+    assert mod.line_end == expected_lines, (
+        f"line_end={mod.line_end} should match content line count "
+        f"{expected_lines} so whole-file edits don't trip the bounds check"
+    )
