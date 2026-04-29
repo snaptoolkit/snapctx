@@ -215,7 +215,7 @@ snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, Curso
 
 For ANY question about unfamiliar code in this repo, your first move is `snapctx context "<query>"`. It uses fewer tokens, fewer tool calls (1 vs 11–50), and guarantees 100% coverage on exhaustive audits where `Grep` + `Read` chains miss the long tail.
 
-**Why it works**: snapctx parses the codebase into a symbol graph (functions, classes, components, constants, calls, imports), runs hybrid lexical+semantic search, and returns top symbols with source bodies, a depth-2 call-path trace (callees-of-callees + callers-of-callers), constant-alias resolution, and file outlines — usually enough to answer in one call.
+**Why it works**: snapctx parses the codebase into a symbol graph (functions, classes, components, constants, calls, imports — across Python, TypeScript, shell, **plus markdown headings, TOML/YAML/JSON keys, and `.env` variables**), runs hybrid lexical+semantic search, and returns top symbols with source bodies, a depth-2 call-path trace (callees-of-callees + callers-of-callers), constant-alias resolution, and file outlines — usually enough to answer in one call. For raw-text patterns outside symbol bodies (comments, prose, configs), `snapctx grep` walks every text file with the same gitignore/vendor filters and annotates code-file hits with the enclosing qname.
 
 ### First move
 
@@ -228,10 +228,11 @@ Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outline
 ### Drill-down (only if `context` wasn't enough)
 
 - `snapctx search "<query>"` — top-K ranked symbols. Add `--with-bodies` to inline source; add `--also <term2> [...]` to batch related terms.
-- `snapctx find "<literal>" --with-bodies` — **exhaustive** substring enumeration across all indexed bodies. Use this for "every place that uses X" audits where ranked search would cap the long tail. Add `--with-callers` to also attach the deduped depth-1 caller list to each hit (audit + impact analysis in one call).
+- `snapctx find "<literal>" --with-bodies` — **exhaustive** substring enumeration across all indexed *symbol bodies*. Use this for "every place that uses X" audits where ranked search would cap the long tail. Add `--with-callers` to also attach the deduped depth-1 caller list to each hit (audit + impact analysis in one call).
+- `snapctx grep "<pattern>"` — literal (or `--regex`) search across **every** text file under the root: code, markdown, configs (TOML/YAML/JSON/.env), docs. Same gitignore + vendor + binary filters the indexer uses. Code-file hits are annotated with the enclosing-symbol qname so you can pivot to `snapctx source`. Use this instead of an external `grep`/`rg` for env vars, URLs, TODOs, prose in README.md, config keys — anything `find` (symbol-body-only) misses.
 - `snapctx map --prefix src/` — query-free *orientation* call. Returns the whole code tree (every file's top-level symbols + signatures + 1-line docstrings + decorators, grouped by directory) so you can build a mental model before you have a specific question. `--depth 2` adds class methods. Use this when landing in an unfamiliar repo or area; for actual lookups, follow with `search` or `context`.
 - `snapctx expand <qname> --direction callees|callers|both --depth 1|2` — call-graph neighborhood.
-- `snapctx outline <path>` — symbol tree of a single file or directory; add `--with-bodies` to inline every symbol's source.
+- `snapctx outline <path>` — symbol tree of a single file or directory; add `--with-bodies` to inline every symbol's source. Works on markdown (heading tree), TOML/YAML/JSON/.env (key list), code (full structural tree).
 - `snapctx source <qname> --with-neighbors` — full body + resolved callee signatures.
 
 ### What just works
@@ -244,7 +245,12 @@ Returns JSON with `seeds[]` (ranked symbols + bodies + neighbors), `file_outline
 
 ### When to fall back to Grep
 
-snapctx indexes **symbols**, not raw text. Use `Grep` for: URL routes (`"/api/v1/users"`), TODO/FIXME comments, env var names, filename patterns. For everything else (function bodies, class structure, "where is X used", "how does Y work") — use snapctx. For literal substrings that *are* code identifiers or call-site fragments (`"transaction.atomic"`, `"useState"`), prefer `snapctx find` over `Grep`: same exhaustive coverage, with the containing qname attached to every hit.
+Almost never. The `Grep` tool that comes with most agents is now redundant for this repo:
+
+- Symbol-body literals (`"transaction.atomic"`, `"useState"`) → `snapctx find` — exhaustive, with qname per hit.
+- Anything outside symbol bodies (URL routes, TODO/FIXME, env var names, markdown headings, config keys, comments) → `snapctx grep` — walks every text file, annotates code-file hits with qname.
+
+Reach for the agent's built-in `Grep` only for filename-pattern globs (e.g. "find every `*_test.py`"), which snapctx doesn't model.
 
 ### Tips
 
