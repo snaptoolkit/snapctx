@@ -213,7 +213,13 @@ def _innermost(rows: list[sqlite3.Row], line_no: int) -> sqlite3.Row | None:
     """Smallest-range row whose [line_start, line_end] contains ``line_no``.
 
     A method nested in a class beats the class because its range is
-    tighter. Modules (whole-file ranges) lose to anything specific.
+    tighter. Modules (whole-file ranges) lose to anything specific —
+    including a single function whose range happens to span the whole
+    file (``def f(): pass`` in a one-line module): without an explicit
+    tie-break, ``min`` would return whichever row hit first in
+    iteration order. We prefer non-module symbols whenever any are
+    present, falling back to the module only when nothing else
+    contains the line.
     """
     candidates = [
         r for r in rows
@@ -221,7 +227,9 @@ def _innermost(rows: list[sqlite3.Row], line_no: int) -> sqlite3.Row | None:
     ]
     if not candidates:
         return None
-    return min(candidates, key=lambda r: r["line_end"] - r["line_start"])
+    non_module = [r for r in candidates if r["kind"] != "module"]
+    pool = non_module if non_module else candidates
+    return min(pool, key=lambda r: r["line_end"] - r["line_start"])
 
 
 def _hint_for(

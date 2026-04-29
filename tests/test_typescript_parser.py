@@ -31,21 +31,31 @@ def test_module_docstring_from_leading_jsdoc(tmp_path: Path) -> None:
     assert "Redis pub/sub channel" in mod.docstring
 
 
-def test_no_module_symbol_for_plain_block_comment(tmp_path: Path) -> None:
-    """A plain /* … */ (not /** … */) should NOT produce a module symbol —
-    those are usually license headers, not documentation."""
+def test_module_symbol_emitted_with_no_docstring_for_plain_block_comment(
+    tmp_path: Path,
+) -> None:
+    """A plain /* … */ (not /** … */) is a license header, not docs — so
+    the module symbol still exists (issue #21) but its ``docstring``
+    field is None."""
     r = _parse(
         tmp_path,
         "licensed.ts",
         "/* Copyright 2024. All rights reserved. */\n"
         "export function run() {}\n",
     )
-    assert not any(s.kind == "module" for s in r.symbols)
+    mod = next((s for s in r.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert mod.docstring is None
 
 
-def test_no_module_symbol_without_leading_comment(tmp_path: Path) -> None:
+def test_module_symbol_emitted_without_leading_comment(tmp_path: Path) -> None:
+    """Every TS file gets a module symbol so callers can address it via
+    ``path/to/file:`` whether or not it has a JSDoc header. Issue #21."""
     r = _parse(tmp_path, "bare.ts", "export function run() {}\n")
-    assert not any(s.kind == "module" for s in r.symbols)
+    mod = next((s for s in r.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert mod.docstring is None
+    assert mod.line_start == 1
 
 
 def test_this_call_optimistically_resolves_to_enclosing_class(tmp_path: Path) -> None:

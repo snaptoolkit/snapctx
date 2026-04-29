@@ -83,3 +83,46 @@ def test_truly_unknown_qname_still_returns_not_found(tmp_path: Path) -> None:
     out = get_source("does/not:Exist", root=repo)
 
     assert out.get("error") == "not_found"
+
+
+def test_module_qname_resolves_for_ts_file_without_jsdoc(tmp_path: Path) -> None:
+    """Regression for issue #21: ``snapctx_source`` on the empty-symbol
+    qname ``path/to/file:`` used to return ``not_found`` whenever the
+    TS file had no ``/** … */`` block at the top. The module symbol
+    is now emitted unconditionally so whole-file source/edit works
+    everywhere."""
+    repo = tmp_path / "repo"
+    (repo / "app" / "services").mkdir(parents=True)
+    (repo / "app" / "services" / "fetchDeviceData.ts").write_text(
+        'import { foo } from "../utils"\n'
+        "\n"
+        "export function fetchDevicesBase(id: string): Promise<unknown> {\n"
+        "  return foo(id)\n"
+        "}\n"
+    )
+    index_root(repo)
+
+    out = get_source("app/services/fetchDeviceData:", root=repo)
+    assert "error" not in out, out
+    assert out["qname"] == "app/services/fetchDeviceData:"
+    assert 'import { foo } from "../utils"' in out["source"]
+    assert "fetchDevicesBase" in out["source"]
+
+
+def test_module_qname_resolves_for_python_file_without_docstring(tmp_path: Path) -> None:
+    """Same regression for Python — a docstringless module is still
+    addressable via its module qname."""
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "bare.py").write_text(
+        "import json\n"
+        "\n"
+        "def f(x): return json.dumps(x)\n"
+    )
+    index_root(repo)
+
+    out = get_source("pkg.bare:", root=repo)
+    assert "error" not in out, out
+    assert out["qname"] == "pkg.bare:"
+    assert "import json" in out["source"]
+    assert "def f(x):" in out["source"]

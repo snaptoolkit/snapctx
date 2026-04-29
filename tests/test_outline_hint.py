@@ -19,10 +19,12 @@ def test_outline_distinguishes_indexed_no_symbols_from_unindexed(tmp_path: Path)
     (repo / "pkg").mkdir(parents=True)
     # Indexable, produces a symbol.
     (repo / "pkg" / "real.py").write_text("def f():\n    return 1\n")
-    # Indexable but yields no top-level symbols. Import-only is the
-    # simplest reliable shape: the parser records the import (so the
-    # file row lands in the ``files`` table) but emits no Symbol rows.
-    (repo / "pkg" / "barren.py").write_text("import os\n")
+    # Indexable but yields zero symbol rows. Since #21, every file
+    # with content emits at least a module symbol — so the natural
+    # "indexed but no symbols" shape is an empty file (the parser
+    # registers it in the ``files`` table via ingest, but emits no
+    # rows in ``symbols``).
+    (repo / "pkg" / "barren.py").write_text("")
     index_root(repo)
 
     barren = outline("pkg/barren.py", root=repo)

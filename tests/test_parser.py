@@ -149,7 +149,8 @@ def test_module_symbol_from_leading_comment_block(tmp_path: Path) -> None:
 
 def test_leading_comment_skips_separators_and_directives(tmp_path: Path) -> None:
     """Pure `# ----` separators and `# noqa`-style directives must not count
-    toward the module doc content threshold."""
+    toward the module doc content threshold — the module symbol still
+    exists (issue #21) but its ``docstring`` field is None."""
     (tmp_path / "a.py").write_text(
         "# ==========================\n"
         "# noqa\n"
@@ -157,19 +158,25 @@ def test_leading_comment_skips_separators_and_directives(tmp_path: Path) -> None
         "import os\n"
     )
     result = PythonParser().parse(tmp_path / "a.py", tmp_path)
-    assert not any(s.kind == "module" for s in result.symbols)
+    mod = next((s for s in result.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert mod.docstring is None
 
 
 def test_leading_comment_ignores_short_content(tmp_path: Path) -> None:
-    """A tiny comment isn't documentation — don't emit a module symbol."""
+    """A tiny comment isn't documentation — module symbol exists with
+    ``docstring=None`` rather than absorbing the trivial header."""
     (tmp_path / "short.py").write_text("# hello\nimport os\n")
     result = PythonParser().parse(tmp_path / "short.py", tmp_path)
-    assert not any(s.kind == "module" for s in result.symbols)
+    mod = next((s for s in result.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert mod.docstring is None
 
 
 def test_leading_comment_rejects_commented_out_code(tmp_path: Path) -> None:
     """A block of commented-out imports / stubs is NOT module documentation —
-    common in abandoned test fixtures."""
+    common in abandoned test fixtures. Module symbol still emitted with
+    ``docstring=None`` so callers can address the file as a whole."""
     (tmp_path / "t.py").write_text(
         "# from mixer.backend.django import mixer\n"
         "# from django.test import TestCase\n"
@@ -179,7 +186,9 @@ def test_leading_comment_rejects_commented_out_code(tmp_path: Path) -> None:
         "def test_x(): pass\n"
     )
     result = PythonParser().parse(tmp_path / "t.py", tmp_path)
-    assert not any(s.kind == "module" for s in result.symbols)
+    mod = next((s for s in result.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert mod.docstring is None
 
 
 def test_leading_comment_mixed_prose_and_code(tmp_path: Path) -> None:
@@ -212,11 +221,18 @@ def test_docstring_preferred_over_comments(tmp_path: Path) -> None:
     assert mod.docstring == "Real docstring."
 
 
-def test_no_module_symbol_without_docstring(tmp_path: Path) -> None:
-    """A file with no top docstring should not emit a kind='module' symbol."""
+def test_module_symbol_emitted_even_without_docstring(tmp_path: Path) -> None:
+    """Every parsed file gets a kind='module' symbol so callers can
+    address it as a whole — ``snapctx_source <file>:`` and
+    ``snapctx_edit_symbol <file>:`` need a row to point at. Files
+    without a docstring have ``docstring=None``. Issue #21."""
     (tmp_path / "bare.py").write_text("def f(): pass\n")
     result = PythonParser().parse(tmp_path / "bare.py", tmp_path)
-    assert not any(s.kind == "module" for s in result.symbols)
+    mod = next((s for s in result.symbols if s.kind == "module"), None)
+    assert mod is not None
+    assert mod.docstring is None
+    assert mod.line_start == 1
+    assert mod.line_end >= 1
 
 
 def test_resolves_imported_call(tmp_path: Path) -> None:
@@ -264,8 +280,8 @@ def test_signature_renders_kwonly_and_defaults(tmp_path: Path) -> None:
         "    return None\n"
     )
     result = PythonParser().parse(tmp_path / "s.py", tmp_path)
-    sig = result.symbols[0].signature
-    assert sig == "def f(a, b: int = 2, *, c: str, d: bool = False) -> None"
+    fn = next(s for s in result.symbols if s.kind == "function")
+    assert fn.signature == "def f(a, b: int = 2, *, c: str, d: bool = False) -> None"
 
 
 def test_syntax_error_returns_empty_result(tmp_path: Path) -> None:

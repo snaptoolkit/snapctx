@@ -114,13 +114,21 @@ class _Visitor:
         self._visit(node)
 
     def _emit_module(self, root) -> None:
-        """Emit Symbol(kind='module') if the file opens with a /** … */ block.
+        """Emit Symbol(kind='module') for every file.
 
-        Convention: in TS/JS, the file-level "docstring" is a JSDoc-style block
-        comment at the very top of the program. We only accept /** … */ (not
-        plain /* … */, which is usually a license header) to avoid indexing
-        noise.
+        Gives the agent a whole-file address — the empty-symbol qname
+        ``path/to/file:`` for ``snapctx_source`` / ``snapctx_edit_symbol``
+        on imports and module-level statements that no enclosing
+        symbol covers. Issue #21.
+
+        Docstring discovery still runs: in TS/JS, the file-level
+        "docstring" is a JSDoc-style ``/** … */`` block at the very
+        top of the program. Plain ``/* … */`` (typically a license
+        header) is intentionally not treated as docstring content.
+        Files without a JSDoc still get a module symbol; the
+        ``docstring`` field is just None.
         """
+        cleaned: str | None = None
         first_comment = None
         for child in root.children:
             if child.type == "comment":
@@ -129,15 +137,22 @@ class _Visitor:
             if child.type in ("hash_bang_line",):
                 continue
             break
-        if first_comment is None:
+        if first_comment is not None:
+            text = self._text(first_comment).strip()
+            if text.startswith("/**"):
+                body = text[3:-2] if text.endswith("*/") else text[3:]
+                stripped = "\n".join(
+                    line.lstrip(" *") for line in body.splitlines()
+                ).strip()
+                if stripped:
+                    cleaned = stripped
+
+        # Truly empty file — same reasoning as the Python parser:
+        # don't emit a ``module:`` row for content-free files; avoids
+        # cross-language qname collision on top-level same-stem files.
+        if not root.children and cleaned is None:
             return
-        text = self._text(first_comment).strip()
-        if not text.startswith("/**"):
-            return
-        body = text[3:-2] if text.endswith("*/") else text[3:]
-        cleaned = "\n".join(line.lstrip(" *") for line in body.splitlines()).strip()
-        if not cleaned:
-            return
+
         qname = make_qname(self.module, [])
         signature = f"module {self.module}" if self.module else "module"
         end_line = root.end_point[0] + 1

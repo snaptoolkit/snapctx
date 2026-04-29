@@ -57,20 +57,30 @@ class _Visitor(ast.NodeVisitor):
     # ---------- module ----------
 
     def emit_module(self, tree: ast.Module) -> None:
-        """Emit a Symbol(kind='module') iff the file has a module-level docstring.
+        """Emit a Symbol(kind='module') for every file.
 
-        Module docstrings often hold the architectural prose — the "why" a
-        file exists — that isn't repeated on any single class/function. Making
-        the module a first-class symbol lets FTS and vector search surface it.
+        The module symbol gives the agent a whole-file address — needed
+        for top-level imports / module-level statements that no enclosing
+        symbol covers, and for ``snapctx_source <module>:`` and
+        ``snapctx_edit_symbol <module>:`` to work uniformly. Issue #21.
 
-        Prefers a triple-quoted docstring, but falls back to a block of ``#``
-        comments at the top of the file — many scripts and config modules
-        document themselves that way without a formal docstring.
+        Module docstrings, when present, also hold the architectural
+        prose — the "why" a file exists — that isn't repeated on any
+        single class/function. We keep the docstring discovery (proper
+        triple-quoted form, with a fallback to a leading ``#`` comment
+        block for scripts and config modules that document themselves
+        that way), but no longer gate emission on it. Files without
+        any prose still get a module symbol; FTS just sees null
+        content there, same as any undocumented symbol.
         """
         docstring = ast.get_docstring(tree, clean=True)
         if not docstring:
             docstring = _leading_comment_docstring(self.source_lines)
-        if not docstring:
+        # Truly empty file (no statements, no prose) — emitting a
+        # ``module:`` row is just noise and risks colliding with a
+        # same-stem file in another language (top-level ``empty.py``
+        # vs ``empty.ts`` both produce qname ``empty:``).
+        if not tree.body and not docstring:
             return
         qname = make_qname(self.module, [])
         end_line = max(
