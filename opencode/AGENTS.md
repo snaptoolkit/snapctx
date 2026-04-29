@@ -28,9 +28,9 @@ Match the *shape of the question* to the right tool. Most queries skip orientati
 | Question shape | First call | Why |
 |---|---|---|
 | **Known symbol name** (a function, class, type, or component name you already have) | `snapctx_search "<name>" -k 5` with the right `kind` (see [Kind filter](#kind-filter-cheat-sheet)) | The fastest path when you have the name. If `kind` was wrong, snapctx retries without it automatically and tells you the actual kind. |
-| **Literal / config key / env var / token / route fragment** (any exact string you'd `grep` for) | `snapctx_grep "<literal>" --in-path <subtree>` | Path-scoped grep is dramatically faster and cleaner than broad search. **Always pass `in_path`** when you have a directory hint. |
+| **Literal / config key / env var / token / route fragment** (any exact string you'd `grep` for) | `snapctx_grep` with `pattern="<literal>"`, `in_path="<subtree>"` | Path-scoped grep is dramatically faster and cleaner than broad search. **Always pass `in_path`** when you have a directory hint. |
 | **Workflow / pipeline question with likely docs** (a feature that probably has a README or design doc) | `snapctx_source "<doc-path>:<heading>"` if you can guess the doc, otherwise `snapctx_context "<query>"` | Docs prose is indexed. Going straight to the doc heading + one implementation symbol is faster than crawling the whole feature. |
-| **Open-ended feature / concept** (you don't have a name; you don't know the area) | `snapctx_context "<query>"` | Returns top seeds with full source + callees + callers + file outlines in one shot. Best when the source area is broad or unknown. Self-trims on overflow (sets `trimmed: "soft"` or `"hard"` and emits a scope-down hint) — when you see that, follow the hint with `snapctx_grep --in-path` or `snapctx_search`. |
+| **Open-ended feature / concept** (you don't have a name; you don't know the area) | `snapctx_context "<query>"` | Returns top seeds with full source + callees + callers + file outlines in one shot. Best when the source area is broad or unknown. Self-trims on overflow (sets `trimmed: "soft"` or `"hard"` and emits a scope-down hint) — when you see that, follow the hint with `snapctx_grep` (path-scoped via `in_path`) or `snapctx_search`. |
 | **Repo with framework build artifacts** (any `.next/`, `dist/`, `.svelte-kit/`, etc. in tree) | path-scoped `snapctx_grep` first, NOT broad context | snapctx skips standard build dirs by default, but path-scoping is still the safest move when the codebase has lots of generated noise. |
 | **Genuinely don't know the repo's shape** | `snapctx_map` | Repo-wide table of contents in one call. Lean by default; pass `mode=full` for signatures. |
 
@@ -71,7 +71,7 @@ Every symbol has a stable **qname**: `<module-path>:<member-path>`.
 - TS: `src/auth/session:SessionManager.refresh`.
 - Markdown: `README.md:Setup.Quickstart`.
 - TOML: `pyproject.toml:project.version`.
-- Module symbol (whole file): `app.urls:` — empty after the colon.
+- **Module symbol (whole file)**: `app.urls:` — empty after the colon. Use this when you need to inspect or rewrite a file's top-level imports / module-level statements that no enclosing symbol covers. `snapctx_source` returns the full file body; `snapctx_edit_symbol` replaces it. Path-style variants (`src/auth/session:`, `app/urls.py:`) also resolve via paraphrase fallback.
 
 In **multi-root** sessions (opencode running at a parent of multiple indexed sub-projects, e.g. `backend/` + `frontend/`), qnames are prefixed with the root, e.g. `backend::pkg.models:User.save`. **Don't guess the prefix** — let `snapctx_search` return the canonical qname and copy it.
 
@@ -86,7 +86,7 @@ In **multi-root** sessions (opencode running at a parent of multiple indexed sub
 | "Show me this exact symbol's source" | `snapctx_source <qname>` | Full body. `with_neighbors=true` adds callee signatures. |
 | "Who calls X? What does X call?" | `snapctx_expand <qname> direction=both depth=2` | Call-graph neighborhood. |
 | "Every place that uses literal L (inside symbols)" | `snapctx_find "L"` | Exhaustive — no top-K cap. Annotated with qname per hit. |
-| "Find raw text anywhere — comments, prose, configs, env files" | `snapctx_grep "P" --in-path <dir>` | Literal or regex over every gitignore-respected text file. Code-file hits annotated with `qname`. **Always pass `in_path`** if you have a directory hint — 10× faster on monorepos and dramatically cleaner results. By default ranks **definition lines first** (where `P` is `def`/`class`/`function`/`const`/etc. introduced) then usage lines, so "where is X defined" surfaces immediately. Each match carries a `definition: bool` flag. Pass `--no-definitions-first` for natural file-order audits. |
+| "Find raw text anywhere — comments, prose, configs, env files" | `snapctx_grep` with `pattern="P"`, `in_path="<dir>"` | Literal or regex over every gitignore-respected text file. Code-file hits annotated with `qname`. **Always pass `in_path`** if you have a directory hint — 10× faster on monorepos and dramatically cleaner results. By default ranks **definition lines first** (where `P` is `def`/`class`/`function`/`const`/etc. introduced) then usage lines, so "where is X defined" surfaces immediately. Each match carries a `definition: bool` flag. |
 
 ## Write ops — qname-addressed, syntax-checked, atomic per file
 
@@ -94,7 +94,7 @@ You don't need to read a file before editing it. Every write op:
 - accepts a **qname** (or path) as the address — no line-number bookkeeping;
 - runs a **syntax pre-flight** before writing (Python `ast.parse`, TS/TSX tree-sitter) and refuses edits that would leave the file unparseable;
 - is **per-file atomic** — if any change in a file fails the pre-flight, none of that file's changes land (other files succeed);
-- guards against **stale coordinates** — refuses if the file's SHA has drifted since the last index, telling you to re-query.
+- **auto-recovers from SHA drift** — if the file changed since the last index pass (autoformat-on-save, IDE write, parallel tool), the file is re-parsed in place and the edit proceeds against the fresh line range. You no longer have to re-query between same-file edits.
 
 ### Edit ASAP workflow
 
@@ -124,11 +124,11 @@ Once you have the right symbol, move to editing quickly:
 `snapctx_grep` and `snapctx_find` both accept an `in_path` parameter that scopes the scan to a subtree. **Use it whenever you have a directory hint** — on a multi-subproject monorepo, the difference between unscoped and scoped is often 10× speed plus dramatically cleaner results (no false hits in unrelated subprojects/migrations/fixtures):
 
 ```
-snapctx_grep "<TOKEN>" --in-path <subdir>      # scoped — fast, focused
-snapctx_grep "<TOKEN>"                          # unscoped — slower, noisier
+snapctx_grep(pattern="<TOKEN>", in_path="<subdir>")    # scoped — fast, focused
+snapctx_grep(pattern="<TOKEN>")                         # unscoped — slower, noisier
 ```
 
-How to pick the path: use `snapctx_map` once to learn the top-level layout (or recall it from the previous call), then scope to whichever subtree the question lives in — the directory containing the relevant subproject, the feature area, the framework's config dir, etc. Even a one-level scope (`--in-path src` vs nothing) noticeably improves precision on large repos.
+How to pick the path: use `snapctx_map` once to learn the top-level layout (or recall it from the previous call), then scope to whichever subtree the question lives in — the directory containing the relevant subproject, the feature area, the framework's config dir, etc. Even a one-level scope (`in_path="src"` vs nothing) noticeably improves precision on large repos.
 
 **`snapctx_search` and `snapctx_context` listen to path hints in the query itself.** A token containing `/` (e.g. `frontend/i18n`, `backend/parser`) inside the query string boosts results whose file path matches that hint. Use this when you don't want to lock the query down with a strict `kind` or `in_path` but you still want the ranker to prefer one subtree over another:
 
@@ -164,12 +164,13 @@ When you already have the exact qname, the next step is usually `snapctx_source`
 - `snapctx_map`'s `depth` is **symbol** nesting (1 or 2), not directory depth. The full directory tree is always returned.
 - `snapctx_map`'s `mode` defaults to `lean` (no per-symbol signatures or line ranges) so the orientation payload stays small. Set `mode=full` only when you actually need signatures from map; otherwise `snapctx_outline <file>` is the right next call.
 - `snapctx_grep`'s `regex=true` switches the pattern from literal substring to Python regex. `case_insensitive=true` works in both modes.
+- **`root` (every tool, optional)** redirects a single call to a different checkout — typically a git worktree under `/tmp/<name>`. Absolute path or relative to the session cwd. Use this when staging a refactor in an isolated worktree without touching the main workspace; if omitted, every tool falls back to the session cwd as before.
 
 ## Anti-patterns
 
 - `glob("**/*.<ext>")` to discover where files live — wasteful; `snapctx_map` shows it in one call (or `snapctx_outline <dir>` for a single subtree).
 - `glob("**/*<keyword>*")` to find code by concept — that's a symbol/concept query; use `snapctx_context "<keyword>"` or `snapctx_search "<keyword>"`.
-- `snapctx_grep "<token>"` without `--in-path` when you have a directory hint — wastes time scanning unrelated subtrees and pollutes results. Always scope when you can.
+- `snapctx_grep(pattern="<token>")` without `in_path` when you have a directory hint — wastes time scanning unrelated subtrees and pollutes results. Always scope when you can.
 - `snapctx_search "<name>"` with no `kind` when you know the kind — pass `kind=method` (Python class member), `kind=component` (React), etc. Snapctx auto-retries on empty result, but the right `kind` is always cheaper.
 - `read` on a whole file when you only want one function → use `snapctx_source <qname>`.
 - reading more file context after `snapctx_source` when the upcoming change is clearly symbol-local → edit the symbol directly.
