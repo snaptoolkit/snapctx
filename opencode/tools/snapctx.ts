@@ -11,11 +11,24 @@ function relPath(p: string, cwd: string): string {
 }
 
 // Override any of these with environment variables:
-//   SNAPCTX_BIN     — path to the ``snapctx`` CLI (default: looked up on PATH)
-//   SNAPCTX_PYTHON  — interpreter that has ``snapctx`` installed (default: ``python3``)
-//   SNAPCTX_BRIDGE  — path to ``_snapctx_writer.py`` (default: sibling of this file)
-const SNAPCTX = process.env.SNAPCTX_BIN || "snapctx"
-const PYTHON = process.env.SNAPCTX_PYTHON || "python3"
+//   SNAPCTX_BIN     — path to the ``snapctx`` CLI
+//   SNAPCTX_PYTHON  — interpreter that has ``snapctx`` installed
+//   SNAPCTX_BRIDGE  — path to ``_snapctx_writer.py``
+// Defaults are set to the local uv tool install so write ops work even when
+// plain `python3` does not have `snapctx` importable.
+const SNAPCTX = process.env.SNAPCTX_BIN || join(homedir(), ".local", "bin", "snapctx")
+const PYTHON =
+  process.env.SNAPCTX_PYTHON ||
+  join(
+    homedir(),
+    ".local",
+    "share",
+    "uv",
+    "tools",
+    "snapctx",
+    "bin",
+    "python",
+  )
 const BRIDGE =
   process.env.SNAPCTX_BRIDGE ||
   join(
@@ -241,16 +254,15 @@ export const edit_symbol = tool({
 
 export const insert_symbol = tool({
   description:
-    "Insert a NEW top-level symbol adjacent to an anchor symbol (before/after). Use to add a new function/class without rewriting the file. Syntax pre-flight applies.",
+    "Insert a NEW top-level symbol adjacent to an anchor symbol (before/after). Use to add a new function/class without rewriting the file. Syntax pre-flight applies. The anchor's qname locates the file — no `file` argument needed.",
   args: {
-    file: tool.schema.string().describe("File path (relative to root)."),
     anchor_qname: tool.schema
       .string()
-      .describe("Qname of the existing symbol to insert near."),
+      .describe("Qname of the existing symbol to insert near. Locates the file too."),
     position: tool.schema
       .string()
       .describe("'before' or 'after' the anchor."),
-    body: tool.schema
+    new_text: tool.schema
       .string()
       .describe("Complete new symbol source, including `def`/`class` line."),
   },

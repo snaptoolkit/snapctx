@@ -135,3 +135,39 @@ def test_insert_then_subsequent_edit_resolves(tmp_path: Path) -> None:
 
     src = get_source("pkg.math:mul", root=repo)
     assert "defensively" in src["source"]
+
+
+def test_opencode_bridge_insert_symbol_arg_mapping(tmp_path: Path) -> None:
+    """The opencode TS wrapper sends ``{anchor_qname, position, new_text}``;
+    the bridge fans those into ``api.insert_symbol(root=root, **args)``.
+
+    Regression for #11: the wrapper previously sent ``file=`` and ``body=``,
+    which the Python API rejects. This test pins the contract by replaying
+    exactly what the wrapper sends through ``_snapctx_writer.py``.
+    """
+    import json as _json
+    import subprocess
+    import sys
+
+    repo = _build_repo(tmp_path)
+    bridge = Path(__file__).resolve().parent.parent / "opencode" / "tools" / "_snapctx_writer.py"
+    assert bridge.exists(), bridge
+
+    payload = {
+        "op": "insert_symbol",
+        "root": str(repo),
+        "args": {
+            "anchor_qname": "pkg.math:add",
+            "position": "after",
+            "new_text": "\n\ndef triple(x):\n    return x * 3\n",
+        },
+    }
+    result = subprocess.run(
+        [sys.executable, str(bridge)],
+        input=_json.dumps(payload),
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = _json.loads(result.stdout)
+    assert "error" not in out, out
+    assert (repo / "pkg" / "math.py").read_text().count("def triple") == 1
