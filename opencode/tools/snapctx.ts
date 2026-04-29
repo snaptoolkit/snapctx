@@ -10,6 +10,20 @@ function relPath(p: string, cwd: string): string {
   return r === "" ? "." : r
 }
 
+// Resolve the effective working directory for a tool call. By default
+// every snapctx_* tool acts on the opencode session's cwd
+// (``ctx.directory``). Passing ``root`` redirects the call to a
+// different checkout — typically a git worktree under ``/tmp/<name>``
+// — so refactors can be staged in isolation without touching the main
+// workspace. Issue #18.
+function resolveCwd(args: { root?: string }, ctx: { directory: string }): string {
+  if (!args.root) return ctx.directory
+  return isAbsolute(args.root) ? args.root : join(ctx.directory, args.root)
+}
+
+const ROOT_ARG_DESC =
+  "Override the indexed root for this call (absolute, or relative to the session cwd). Use to target a git worktree outside the main workspace. Defaults to the session cwd."
+
 // Override any of these with environment variables:
 //   SNAPCTX_BIN     — path to the ``snapctx`` CLI
 //   SNAPCTX_PYTHON  — interpreter that has ``snapctx`` installed
@@ -43,6 +57,10 @@ const BRIDGE =
   )
 
 function callApi(op: string, args: Record<string, unknown>, cwd: string): Promise<string> {
+  // Bridge sets ``root=cwd`` on the Python call; if a wrapper's
+  // ``args`` carries its own ``root`` (the per-call worktree
+  // override) we strip it here so the kwarg doesn't collide.
+  const { root: _root, ...payload } = args
   return new Promise((resolve, reject) => {
     const p = spawn(PYTHON, [BRIDGE], { cwd })
     let out = ""
@@ -54,7 +72,7 @@ function callApi(op: string, args: Record<string, unknown>, cwd: string): Promis
       else reject(new Error(`snapctx ${op} failed (${code}): ${out.trim() || err.trim()}`))
     })
     p.on("error", reject)
-    p.stdin.write(JSON.stringify({ op, args, root: cwd }))
+    p.stdin.write(JSON.stringify({ op, args: payload, root: cwd }))
     p.stdin.end()
   })
 }
@@ -85,11 +103,13 @@ export const context = tool({
       .number()
       .optional()
       .describe("Number of seed symbols to expand (default 3)."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
+    const cwd = resolveCwd(args, ctx)
     const cli = ["context", args.query]
     if (args.k_seeds) cli.push("--k-seeds", String(args.k_seeds))
-    return await run(cli, ctx.directory)
+    return await run(cli, cwd)
   },
 })
 
@@ -103,12 +123,14 @@ export const search = tool({
       .string()
       .optional()
       .describe("Filter by kind: function, class, method, module."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
+    const cwd = resolveCwd(args, ctx)
     const cli = ["search", args.query]
     if (args.k) cli.push("-k", String(args.k))
     if (args.kind) cli.push("--kind", args.kind)
-    return await run(cli, ctx.directory)
+    return await run(cli, cwd)
   },
 })
 
@@ -117,9 +139,11 @@ export const outline = tool({
     "Symbol tree of a single file or directory. Prefer over `read` when you only need to see what's in a file, not the bodies.",
   args: {
     path: tool.schema.string().describe("File or directory path."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await run(["outline", relPath(args.path, ctx.directory)], ctx.directory)
+    const cwd = resolveCwd(args, ctx)
+    return await run(["outline", relPath(args.path, cwd)], cwd)
   },
 })
 
@@ -132,11 +156,13 @@ export const source = tool({
       .boolean()
       .optional()
       .describe("Include callee signatures."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
+    const cwd = resolveCwd(args, ctx)
     const cli = ["source", args.qname]
     if (args.with_neighbors) cli.push("--with-neighbors")
-    return await run(cli, ctx.directory)
+    return await run(cli, cwd)
   },
 })
 
@@ -150,12 +176,14 @@ export const expand = tool({
       .optional()
       .describe("'callees', 'callers', or 'both' (default 'both')."),
     depth: tool.schema.number().optional().describe("Walk depth (default 2)."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
+    const cwd = resolveCwd(args, ctx)
     const cli = ["expand", args.qname]
     if (args.direction) cli.push("--direction", args.direction)
     if (args.depth) cli.push("--depth", String(args.depth))
-    return await run(cli, ctx.directory)
+    return await run(cli, cwd)
   },
 })
 
@@ -166,12 +194,14 @@ export const find = tool({
     literal: tool.schema.string().describe("Exact substring to find."),
     in_path: tool.schema.string().optional().describe("Restrict to a path."),
     kind: tool.schema.string().optional().describe("Filter by symbol kind."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
+    const cwd = resolveCwd(args, ctx)
     const cli = ["find", args.literal]
-    if (args.in_path) cli.push("--in-path", relPath(args.in_path, ctx.directory))
+    if (args.in_path) cli.push("--in", relPath(args.in_path, cwd))
     if (args.kind) cli.push("--kind", args.kind)
-    return await run(cli, ctx.directory)
+    return await run(cli, cwd)
   },
 })
 
@@ -202,15 +232,17 @@ export const grep = tool({
       .number()
       .optional()
       .describe("Cap on total hits (default 200)."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
+    const cwd = resolveCwd(args, ctx)
     const cli = ["grep", args.pattern]
     if (args.regex) cli.push("--regex")
     if (args.case_insensitive) cli.push("-i")
-    if (args.in_path) cli.push("--in", relPath(args.in_path, ctx.directory))
+    if (args.in_path) cli.push("--in", relPath(args.in_path, cwd))
     if (args.context_lines !== undefined) cli.push("-C", String(args.context_lines))
     if (args.max_results) cli.push("--max-results", String(args.max_results))
-    return await run(cli, ctx.directory)
+    return await run(cli, cwd)
   },
 })
 
@@ -225,15 +257,17 @@ export const map = tool({
       .describe(
         "Symbol nesting depth (1 or 2). 1 = top-level symbols only (default). 2 = also include class methods / nested functions. Does NOT control directory depth — the full directory tree is always returned.",
       ),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
+    const cwd = resolveCwd(args, ctx)
     const cli = ["map"]
-    if (args.prefix) cli.push("--prefix", relPath(args.prefix, ctx.directory))
+    if (args.prefix) cli.push("--prefix", relPath(args.prefix, cwd))
     if (args.depth) {
       const d = Math.min(2, Math.max(1, args.depth))
       cli.push("--depth", String(d))
     }
-    return await run(cli, ctx.directory)
+    return await run(cli, cwd)
   },
 })
 export const edit_symbol = tool({
@@ -246,9 +280,10 @@ export const edit_symbol = tool({
       .describe(
         "COMPLETE replacement body, including the `def`/`class` line, signature, docstring (if any), and full implementation. Indented as it should appear in the file.",
       ),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("edit_symbol", args, ctx.directory)
+    return await callApi("edit_symbol", args, resolveCwd(args, ctx))
   },
 })
 
@@ -265,9 +300,10 @@ export const insert_symbol = tool({
     new_text: tool.schema
       .string()
       .describe("Complete new symbol source, including `def`/`class` line."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("insert_symbol", args, ctx.directory)
+    return await callApi("insert_symbol", args, resolveCwd(args, ctx))
   },
 })
 
@@ -283,9 +319,10 @@ export const edit_batch = tool({
         }),
       )
       .describe("List of {qname, new_body} edits."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("edit_symbol_batch", { edits: args.edits }, ctx.directory)
+    return await callApi("edit_symbol_batch", { edits: args.edits }, resolveCwd(args, ctx))
   },
 })
 
@@ -294,9 +331,10 @@ export const delete_symbol = tool({
     "Delete a symbol by qname. Trims surrounding blank lines to preserve PEP-8 spacing. Refuses if the file would no longer parse.",
   args: {
     qname: tool.schema.string().describe("Qualified symbol name to delete."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("delete_symbol", args, ctx.directory)
+    return await callApi("delete_symbol", args, resolveCwd(args, ctx))
   },
 })
 
@@ -310,9 +348,10 @@ export const add_import = tool({
       .describe(
         "The full import line, e.g. 'from typing import Any' or 'import json'.",
       ),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("add_import", args, ctx.directory)
+    return await callApi("add_import", args, resolveCwd(args, ctx))
   },
 })
 
@@ -322,9 +361,10 @@ export const remove_import = tool({
   args: {
     file: tool.schema.string().describe("File path (relative to root)."),
     statement: tool.schema.string().describe("The exact import line to remove."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("remove_import", args, ctx.directory)
+    return await callApi("remove_import", args, resolveCwd(args, ctx))
   },
 })
 
@@ -334,9 +374,10 @@ export const create_file = tool({
   args: {
     path: tool.schema.string().describe("New file path (relative to root)."),
     content: tool.schema.string().describe("File contents."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("create_file", args, ctx.directory)
+    return await callApi("create_file", args, resolveCwd(args, ctx))
   },
 })
 
@@ -345,9 +386,10 @@ export const delete_file = tool({
     "Delete a file. Refuses if outside root. Re-indexes after.",
   args: {
     path: tool.schema.string().describe("File path to delete (relative to root)."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("delete_file", args, ctx.directory)
+    return await callApi("delete_file", args, resolveCwd(args, ctx))
   },
 })
 
@@ -357,9 +399,10 @@ export const move_file = tool({
   args: {
     src: tool.schema.string().describe("Current path (relative to root)."),
     dst: tool.schema.string().describe("New path (relative to root)."),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("move_file", args, ctx.directory)
+    return await callApi("move_file", args, resolveCwd(args, ctx))
   },
 })
 
@@ -373,8 +416,9 @@ export const rename_symbol = tool({
       .describe(
         "New SHORT name only (e.g. 'compute_total'), not a full qname. Module path is preserved.",
       ),
+    root: tool.schema.string().optional().describe(ROOT_ARG_DESC),
   },
   async execute(args, ctx) {
-    return await callApi("rename_symbol", args, ctx.directory)
+    return await callApi("rename_symbol", args, resolveCwd(args, ctx))
   },
 })
