@@ -96,6 +96,16 @@ You don't need to read a file before editing it. Every write op:
 - is **per-file atomic** — if any change in a file fails the pre-flight, none of that file's changes land (other files succeed);
 - guards against **stale coordinates** — refuses if the file's SHA has drifted since the last index, telling you to re-query.
 
+### Edit ASAP workflow
+
+Once you have the right symbol, move to editing quickly:
+
+- After 1–2 discovery calls, prefer `snapctx_source` on the exact qname and then edit immediately.
+- If the change is symbol-local, default to `snapctx_edit_symbol` or `snapctx_edit_batch` rather than reading more file context.
+- If multiple entry points share one rule, first add or identify a reusable helper, then batch-edit the callers.
+- For TS/React work, the default path should usually be `snapctx_search` → `snapctx_source` → `snapctx_edit_symbol` / `snapctx_edit_batch`.
+- Treat `read` as an exception for editing, not a confirmation step.
+
 | Task | Tool | Notes |
 |---|---|---|
 | Replace one function / class / method body | `snapctx_edit_symbol` | `new_body` is the COMPLETE replacement (def line through last statement). |
@@ -120,6 +130,13 @@ snapctx_grep "<TOKEN>"                          # unscoped — slower, noisier
 
 How to pick the path: use `snapctx_map` once to learn the top-level layout (or recall it from the previous call), then scope to whichever subtree the question lives in — the directory containing the relevant subproject, the feature area, the framework's config dir, etc. Even a one-level scope (`--in-path src` vs nothing) noticeably improves precision on large repos.
 
+**`snapctx_search` and `snapctx_context` listen to path hints in the query itself.** A token containing `/` (e.g. `frontend/i18n`, `backend/parser`) inside the query string boosts results whose file path matches that hint. Use this when you don't want to lock the query down with a strict `kind` or `in_path` but you still want the ranker to prefer one subtree over another:
+
+```
+snapctx_search "routing setup frontend/i18n"        # boosts frontend/i18n/* over other matches
+snapctx_context "how does navigation work in frontend/i18n"
+```
+
 ## Recovery, not fallback
 
 If a `snapctx_*` call returns nothing or the wrong symbol, **do NOT fall back to `read` / `glob` / `grep`**. Recover within snapctx:
@@ -131,10 +148,12 @@ If a `snapctx_*` call returns nothing or the wrong symbol, **do NOT fall back to
 
 Reading whole files with `read` because one snapctx call missed is the failure mode this config exists to prevent.
 
+When you already have the exact qname, the next step is usually `snapctx_source` and then a write op, not a fallback `read`.
+
 ## When to fall back to opencode's built-in tools
 
 - **`grep`** — only for filename-pattern globs (e.g. "find every `*_test.py`"). Content search is `snapctx_grep`.
-- **`read`** — only for a *whole file* end-to-end (rare). `snapctx_outline` shows structure; `snapctx_source <qname>` gives any symbol; `snapctx_grep` returns matches with N lines of context.
+- **`read`** — only for a *whole file* end-to-end (rare), or when the target depends on imports, top-level constants, or non-symbol file structure that `snapctx_source` does not expose cleanly. It is not the default next step after finding a symbol.
 - **`glob`** / **`list`** — only for filename patterns. `snapctx_map` shows the directory tree.
 - **`edit`** / **`write`** — only for non-code text snapctx doesn't parse (binary configs, lockfiles, generated artifacts).
 
@@ -153,6 +172,7 @@ Reading whole files with `read` because one snapctx call missed is the failure m
 - `snapctx_grep "<token>"` without `--in-path` when you have a directory hint — wastes time scanning unrelated subtrees and pollutes results. Always scope when you can.
 - `snapctx_search "<name>"` with no `kind` when you know the kind — pass `kind=method` (Python class member), `kind=component` (React), etc. Snapctx auto-retries on empty result, but the right `kind` is always cheaper.
 - `read` on a whole file when you only want one function → use `snapctx_source <qname>`.
+- reading more file context after `snapctx_source` when the upcoming change is clearly symbol-local → edit the symbol directly.
 - `grep` for raw text anywhere → use `snapctx_grep "<pattern>"`. Same coverage with gitignore + vendor + binary filters baked in, plus qname annotation on code-file hits.
 - `edit` / `write` to change a function body → use `snapctx_edit_symbol`. Syntax pre-flight catches malformed edits before they corrupt the file.
 - Sequential `edit` calls on related symbols → use `snapctx_edit_batch`. Per-file atomic + one round trip.
