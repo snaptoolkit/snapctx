@@ -28,7 +28,9 @@ from snapctx.api._insert import insert_symbol
 from snapctx.api._map import map_repo
 from snapctx.api._rename import rename_symbol
 from snapctx.api._multi import (
+    add_import_multi,
     context_multi,
+    delete_symbol_multi,
     edit_symbol_multi,
     expand_multi,
     find_literal_multi,
@@ -37,6 +39,7 @@ from snapctx.api._multi import (
     insert_symbol_multi,
     map_repo_multi,
     outline_multi,
+    remove_import_multi,
     search_code_multi,
 )
 from snapctx.api._retrieve import get_source, outline
@@ -49,11 +52,13 @@ from snapctx.api._ranking import classify_query as _classify_query  # noqa: F401
 
 __all__ = [
     "add_import",
+    "add_import_multi",
     "context",
     "context_multi",
     "create_file",
     "delete_file",
     "delete_symbol",
+    "delete_symbol_multi",
     "edit_symbol",
     "edit_symbol_batch",
     "edit_symbol_multi",
@@ -74,6 +79,7 @@ __all__ = [
     "outline",
     "outline_multi",
     "remove_import",
+    "remove_import_multi",
     "rename_symbol",
     "search_code",
     "search_code_multi",

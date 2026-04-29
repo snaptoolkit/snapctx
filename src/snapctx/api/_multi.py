@@ -25,10 +25,11 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from snapctx.api._context import context
-from snapctx.api._edit import edit_symbol
+from snapctx.api._edit import delete_symbol, edit_symbol
 from snapctx.api._find import find_literal
 from snapctx.api._grep import grep_files
 from snapctx.api._graph import expand
+from snapctx.api._imports import add_import, remove_import
 from snapctx.api._insert import insert_symbol
 from snapctx.api._map import map_repo
 from snapctx.api._ranking import search_hint
@@ -319,6 +320,95 @@ def insert_symbol_multi(
         ),
         anchor=anchor,
     )
+
+
+def delete_symbol_multi(
+    qname: str,
+    roots: list[Path],
+    *,
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``delete_symbol`` to whichever root owns ``qname``."""
+    return _route_qname(
+        qname, roots,
+        lambda r: delete_symbol(qname, root=r),
+        not_found_hint=(
+            f"No symbol {qname!r} in any indexed root. "
+            "Run search first to find a valid qname."
+        ),
+        anchor=anchor,
+    )
+
+
+def add_import_multi(
+    file: str,
+    statement: str,
+    roots: list[Path],
+    *,
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``add_import`` to whichever root contains ``file``."""
+    return _route_file(
+        file, roots,
+        lambda r: add_import(file, statement, root=r),
+        anchor=anchor,
+    )
+
+
+def remove_import_multi(
+    file: str,
+    statement: str,
+    roots: list[Path],
+    *,
+    anchor: Path | None = None,
+) -> dict:
+    """Route ``remove_import`` to whichever root contains ``file``."""
+    return _route_file(
+        file, roots,
+        lambda r: remove_import(file, statement, root=r),
+        anchor=anchor,
+    )
+
+
+def _route_file(
+    file: str,
+    roots: list[Path],
+    operation: Callable[[Path], dict],
+    *,
+    anchor: Path | None,
+) -> dict:
+    """Pick the root that contains ``file`` and delegate.
+
+    Absolute path → use ``route_by_path`` (longest-prefix match).
+    Relative path → resolve against ``anchor`` first, then route. Falls
+    back to trying each root in order (first one whose ``op`` doesn't
+    return ``not_found`` wins) when neither works.
+    """
+    from snapctx.roots import root_label, route_by_path
+
+    p = Path(file)
+    if not p.is_absolute() and anchor is not None:
+        p = (anchor / p).resolve()
+    elif p.is_absolute():
+        p = p.resolve()
+
+    target = route_by_path(p, roots)
+    if target is not None:
+        result = operation(target)
+        result["root"] = root_label(target, anchor)
+        return result
+
+    for r in roots:
+        result = operation(r)
+        if result.get("error") != "not_found":
+            result["root"] = root_label(r, anchor)
+            return result
+    return {
+        "file": file,
+        "error": "not_found",
+        "hint": f"File {file!r} not under any indexed root.",
+        "roots_tried": _root_labels(roots, anchor),
+    }
 
 
 def outline_multi(

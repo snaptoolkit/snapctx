@@ -20,8 +20,12 @@ from pathlib import Path
 from typing import Callable
 
 from snapctx.api import (
+    add_import,
+    add_import_multi,
     context,
     context_multi,
+    delete_symbol,
+    delete_symbol_multi,
     edit_symbol,
     edit_symbol_multi,
     expand,
@@ -39,6 +43,8 @@ from snapctx.api import (
     map_repo_multi,
     outline,
     outline_multi,
+    remove_import,
+    remove_import_multi,
     search_code,
     search_code_multi,
 )
@@ -620,6 +626,41 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_insert.add_argument("--root", default=".")
 
+    p_delete = sub.add_parser(
+        "delete",
+        help=(
+            "Delete a symbol by qname. Refuses if the file would no "
+            "longer parse; trims one surrounding blank line."
+        ),
+    )
+    p_delete.add_argument("qname", help="Fully qualified symbol name to remove.")
+    p_delete.add_argument("--root", default=".")
+
+    p_import_add = sub.add_parser(
+        "import-add",
+        help=(
+            "Add an import line to a file. Idempotent. Python: "
+            "docstring-aware (lands AFTER a leading module docstring)."
+        ),
+    )
+    p_import_add.add_argument("file", help="File path (relative to root, or absolute).")
+    p_import_add.add_argument(
+        "statement",
+        help="Full import line, e.g. 'from typing import Any' or 'import json'.",
+    )
+    p_import_add.add_argument("--root", default=".")
+
+    p_import_rm = sub.add_parser(
+        "import-remove",
+        help="Remove an import line from a file. Idempotent (no-op if absent).",
+    )
+    p_import_rm.add_argument("file", help="File path (relative to root, or absolute).")
+    p_import_rm.add_argument(
+        "statement",
+        help="Exact import line to remove (matched after stripping whitespace).",
+    )
+    p_import_rm.add_argument("--root", default=".")
+
     return parser
 
 
@@ -662,7 +703,8 @@ def main(argv: list[str] | None = None) -> int:
     # index isn't being queried and SHA-skipping its 300+ files is pure
     # waste (~750 ms on a real project). Vendor packages are
     # built-once-and-forget — no per-call refresh needed.
-    if args.cmd not in ("edit", "insert"):
+    write_cmds = ("edit", "insert", "delete", "import-add", "import-remove")
+    if args.cmd not in write_cmds:
         _resolve_query_scope(roots, args)
     else:
         # Vendor scope is a read-only concept; write ops refuse it via the API.
@@ -674,6 +716,12 @@ def main(argv: list[str] | None = None) -> int:
         return _edit_dispatch(args, roots, anchor)
     if args.cmd == "insert":
         return _insert_dispatch(args, roots, anchor)
+    if args.cmd == "delete":
+        return _delete_dispatch(args, roots, anchor)
+    if args.cmd == "import-add":
+        return _import_add_dispatch(args, roots, anchor)
+    if args.cmd == "import-remove":
+        return _import_remove_dispatch(args, roots, anchor)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
@@ -744,6 +792,42 @@ def _insert_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) 
             args.anchor_qname, new_text,
             root=roots[0], position=args.position,
         )
+    _emit(result)
+    return 0 if "error" not in result else 1
+
+
+def _delete_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) -> int:
+    """Dispatch ``delete_symbol`` (single or multi-root by qname)."""
+    if len(roots) > 1:
+        result = delete_symbol_multi(args.qname, roots=roots, anchor=anchor)
+    else:
+        result = delete_symbol(args.qname, root=roots[0])
+    _emit(result)
+    return 0 if "error" not in result else 1
+
+
+def _import_add_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    if len(roots) > 1:
+        result = add_import_multi(
+            args.file, args.statement, roots=roots, anchor=anchor,
+        )
+    else:
+        result = add_import(args.file, args.statement, root=roots[0])
+    _emit(result)
+    return 0 if "error" not in result else 1
+
+
+def _import_remove_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    if len(roots) > 1:
+        result = remove_import_multi(
+            args.file, args.statement, roots=roots, anchor=anchor,
+        )
+    else:
+        result = remove_import(args.file, args.statement, root=roots[0])
     _emit(result)
     return 0 if "error" not in result else 1
 
