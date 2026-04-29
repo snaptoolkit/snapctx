@@ -210,6 +210,8 @@ snapctx index /path/to/your/repo
 
 snapctx is a CLI tool. Any agent that can run shell commands (Claude Code, opencode, Cursor's terminal, custom Agent SDK loops) can use it via `Bash` calls. Most agents default to `Grep` + `Read` + `Edit` out of habit — paste the block below into your project's `CLAUDE.md` / `AGENTS.md` (or your global one at `~/.config/opencode/AGENTS.md`, `~/.claude/CLAUDE.md`) to redirect them.
 
+> **Using opencode?** A drop-in integration with all 18 snapctx ops wired as native tools (no MCP) lives in [`opencode/`](opencode/). Symlink the files into `~/.config/opencode/`, restart, done.
+
 The block is language-agnostic. snapctx supports the same operations across **Python, TypeScript, TSX, JSX, shell, Markdown, TOML, YAML, JSON, and `.env`** — every command below works the same regardless of which language the file is in.
 
 ```markdown
