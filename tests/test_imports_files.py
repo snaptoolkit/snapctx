@@ -140,12 +140,17 @@ def test_add_import_lands_after_multiline_docstring(tmp_path: Path) -> None:
     assert 0 < pos_close < pos_import
 
 
-def test_add_import_refuses_when_file_changed(tmp_path: Path) -> None:
+def test_add_import_auto_recovers_when_file_changed(tmp_path: Path) -> None:
+    """SHA drift triggers an inline single-file re-parse so the import
+    still lands cleanly. Regression for #15."""
     repo = _build_repo(tmp_path)
     target = repo / "pkg" / "math.py"
     target.write_text("# external edit\n" + target.read_text())
     result = add_import("pkg/math.py", "import sys", root=repo)
-    assert result["error"] == "stale_coordinates"
+    assert "error" not in result, result
+    assert "import sys" in target.read_text()
+    # External change still present — we recovered, not overwrote.
+    assert target.read_text().startswith("# external edit")
 
 
 # ----- delete_symbol -----

@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from snapctx.api._common import open_index, resolve_qname
+from snapctx.api._common import open_index, refresh_file_in_index, resolve_qname
 from snapctx.index import sha_bytes
 
 # Suffixes for which we run a Python AST parse on the candidate file
@@ -69,15 +69,32 @@ def delete_symbol(
             data = path.read_bytes()
         except OSError as e:
             return {"qname": canonical, "error": "read_failed", "hint": str(e)}
+
+        # Auto-recovery for SHA drift: if the file changed since the
+        # last index pass (autoformat-on-save, IDE write, parallel
+        # tool), re-parse it once and retry the lookup. Beats forcing
+        # the agent to re-query manually for every same-file edit.
         if idx.current_sha(str(path)) != sha_bytes(data):
-            return {
-                "qname": canonical,
-                "error": "stale_coordinates",
-                "hint": (
-                    f"File {str(path)!r} has changed since the last index. "
-                    "Re-query and retry."
-                ),
-            }
+            if not refresh_file_in_index(idx, path, root_path):
+                return {
+                    "qname": canonical,
+                    "error": "stale_coordinates",
+                    "hint": (
+                        f"File {str(path)!r} changed and could not be re-parsed."
+                    ),
+                }
+            canonical2, _ = resolve_qname(idx, canonical)
+            if canonical2 is None:
+                return {
+                    "qname": canonical,
+                    "error": "not_found",
+                    "hint": (
+                        f"Symbol {canonical!r} no longer exists in {path.name!r} "
+                        "after the external file change. Re-query for the new qname."
+                    ),
+                }
+            row = idx.get_symbol(canonical2)
+            canonical = canonical2
 
         text = data.decode("utf-8", errors="replace")
         had_trailing_nl = text.endswith("\n")
@@ -217,20 +234,32 @@ def edit_symbol(
         except OSError as e:
             return {"qname": canonical, "error": "read_failed", "hint": str(e)}
 
-        # Staleness guard: if the file changed since indexing, line
-        # numbers may have drifted. Sha comparison is exact and cheap.
+        # Auto-recovery for SHA drift: re-parse the file once and retry
+        # the qname lookup before giving up. Covers the common case
+        # where an autoformat-on-save / IDE write / parallel tool
+        # touched the file between two snapctx writes.
         indexed_sha = idx.current_sha(str(path))
         if indexed_sha != sha_bytes(data):
-            return {
-                "qname": canonical,
-                "error": "stale_coordinates",
-                "hint": (
-                    f"File {str(path)!r} has changed since the last index "
-                    "— line numbers in the index may not match the current "
-                    "file. Re-query (source / find) to refresh coordinates, "
-                    "then retry the edit."
-                ),
-            }
+            if not refresh_file_in_index(idx, path, root_path):
+                return {
+                    "qname": canonical,
+                    "error": "stale_coordinates",
+                    "hint": (
+                        f"File {str(path)!r} changed and could not be re-parsed."
+                    ),
+                }
+            canonical2, _ = resolve_qname(idx, canonical)
+            if canonical2 is None:
+                return {
+                    "qname": canonical,
+                    "error": "not_found",
+                    "hint": (
+                        f"Symbol {canonical!r} no longer exists in {path.name!r} "
+                        "after the external file change. Re-query for the new qname."
+                    ),
+                }
+            row = idx.get_symbol(canonical2)
+            canonical = canonical2
 
         text = data.decode("utf-8", errors="replace")
         # Splitlines drops the trailing newline distinction; rebuild with

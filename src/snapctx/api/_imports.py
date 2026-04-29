@@ -25,7 +25,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from snapctx.api._common import open_index
+from snapctx.api._common import open_index, refresh_file_in_index
 from snapctx.index import sha_bytes
 
 _PYTHON_SUFFIXES = (".py", ".pyi")
@@ -169,19 +169,21 @@ def add_import(
 
     idx = open_index(root_path, scope=None)
     try:
-        # Staleness guard: file SHA on disk must match the index.
         try:
             data = path.read_bytes()
         except OSError as e:
             return {"error": "read_failed", "hint": str(e)}
+        # Auto-recovery: re-parse once if SHA drifted (autoformat,
+        # IDE write, parallel tool) instead of bouncing the agent
+        # through a re-query loop.
         if idx.current_sha(str(path)) != sha_bytes(data):
-            return {
-                "error": "stale_coordinates",
-                "hint": (
-                    f"File {str(path)!r} has changed since the last index. "
-                    "Re-query and retry."
-                ),
-            }
+            if not refresh_file_in_index(idx, path, root_path):
+                return {
+                    "error": "stale_coordinates",
+                    "hint": (
+                        f"File {str(path)!r} changed and could not be re-parsed."
+                    ),
+                }
 
         text = data.decode("utf-8", errors="replace")
         had_trailing_nl = text.endswith("\n")
@@ -261,12 +263,13 @@ def remove_import(
         except OSError as e:
             return {"error": "read_failed", "hint": str(e)}
         if idx.current_sha(str(path)) != sha_bytes(data):
-            return {
-                "error": "stale_coordinates",
-                "hint": (
-                    f"File {str(path)!r} has changed since the last index."
-                ),
-            }
+            if not refresh_file_in_index(idx, path, root_path):
+                return {
+                    "error": "stale_coordinates",
+                    "hint": (
+                        f"File {str(path)!r} changed and could not be re-parsed."
+                    ),
+                }
     finally:
         idx.close()
 

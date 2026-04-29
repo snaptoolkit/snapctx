@@ -12,7 +12,38 @@ import json
 import sqlite3
 from pathlib import Path
 
-from snapctx.index import Index, db_path_for
+from snapctx.index import Index, db_path_for, sha_bytes
+
+
+def refresh_file_in_index(idx: Index, path: Path, root: Path) -> bool:
+    """Re-parse one file and update its row in the open index.
+
+    Used by the write ops to recover from SHA drift in-place: when a
+    file changed on disk between the last index pass and the agent's
+    write call (autoformat-on-save, a stray manual edit, a parallel
+    tool), running a single-file refresh costs ~10 ms and lets the
+    edit proceed against fresh coordinates instead of bouncing the
+    agent through a re-query loop.
+
+    Returns True if the file was successfully re-parsed, False if it
+    no longer exists or has no parser. The caller still re-resolves
+    the qname afterwards — the symbol may have moved or been
+    deleted by the external edit.
+    """
+    from snapctx.parsers.registry import parser_for_path
+
+    if not path.exists():
+        return False
+    parser = parser_for_path(path)
+    if parser is None:
+        return False
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    parsed = parser.parse(path, root)
+    idx.ingest(str(path), parser.language, sha_bytes(data), parsed)
+    return True
 
 
 def open_index(root: Path, scope: str | None = None) -> Index:

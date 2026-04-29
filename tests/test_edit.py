@@ -72,18 +72,59 @@ def test_edit_unknown_qname_returns_not_found(tmp_path: Path) -> None:
     assert "def add(a, b):" in (repo / "pkg" / "math.py").read_text()
 
 
-def test_edit_refuses_when_file_changed_since_index(tmp_path: Path) -> None:
+def test_edit_auto_recovers_when_file_changed_since_index(tmp_path: Path) -> None:
+    """External edit between index and edit_symbol triggers an inline
+    single-file re-parse; the edit proceeds against fresh coordinates.
+
+    Regression for issue #15: a same-file edit chain (or a stray IDE
+    save) used to fail with ``stale_coordinates`` and force the agent
+    to re-query. Now the API recovers in-place.
+    """
     repo = _build_repo(tmp_path)
 
-    # Simulate an external editor: line numbers in the index now lie.
+    # Simulate an external editor inserting two lines at the top.
     target = repo / "pkg" / "math.py"
-    target.write_text("# header inserted by another tool\n" + target.read_text())
+    target.write_text(
+        "# header inserted by another tool\n"
+        "X = 1\n"
+        + target.read_text()
+    )
 
-    result = edit_symbol("pkg.math:add", "def add(a, b): return a + b\n", root=repo)
-    assert result["error"] == "stale_coordinates"
-    assert "re-query" in result["hint"].lower()
-    # File still has the user's external edit untouched — we did not write.
-    assert (repo / "pkg" / "math.py").read_text().startswith("# header inserted")
+    result = edit_symbol(
+        "pkg.math:add",
+        "def add(a, b): return a + b + 1\n",
+        root=repo,
+    )
+    assert "error" not in result, result
+    assert result["qname"] == "pkg.math:add"
+    on_disk = target.read_text()
+    # External insertion preserved.
+    assert on_disk.startswith("# header inserted")
+    # Edit landed on the symbol's NEW location.
+    assert "return a + b + 1" in on_disk
+
+
+def test_edit_returns_not_found_when_external_change_removed_symbol(
+    tmp_path: Path,
+) -> None:
+    """If the external edit deleted the target symbol, the inline
+    re-parse can't recover — surface ``not_found`` rather than
+    silently writing to the wrong place."""
+    repo = _build_repo(tmp_path)
+    target = repo / "pkg" / "math.py"
+    target.write_text(
+        '"""Math helpers."""\n'
+        "\n"
+        "def mul(a, b):\n"
+        "    return a * b\n"
+    )
+
+    result = edit_symbol(
+        "pkg.math:add",
+        "def add(a, b): return a + b\n",
+        root=repo,
+    )
+    assert result["error"] == "not_found"
 
 
 def test_edit_preserves_trailing_newline(tmp_path: Path) -> None:
