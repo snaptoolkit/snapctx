@@ -300,3 +300,76 @@ def test_parallel_writes_do_not_raise_database_locked(tmp_path: Path) -> None:
     assert all("error" not in r for r in results), results
     for i in range(8):
         assert "import sys" in (repo / "pkg" / f"mod_{i}.py").read_text()
+
+
+def test_add_import_after_multiline_python_import_block(tmp_path: Path) -> None:
+    """Regression for issue #24: a multi-line ``from x import (a, b)``
+    statement records the START line in the imports table; ``add_import``
+    used to insert at ``max(line) + 0`` and split the statement in
+    half. The new import must land AFTER the closing ``)``."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "m.py").write_text(
+        "from typing import (\n"
+        "    Any,\n"
+        "    Dict,\n"
+        "    List,\n"
+        ")\n"
+        "\n"
+        "from os import (\n"
+        "    path,\n"
+        "    sep,\n"
+        ")\n"
+        "\n"
+        "\n"
+        "def f(): pass\n"
+    )
+    index_root(repo)
+
+    result = add_import("m.py", "import json", root=repo)
+    assert "error" not in result, result
+    text = (repo / "m.py").read_text()
+    # The original multi-line imports must be intact — `from os import`
+    # block still ends with `)` on its own line, untouched.
+    assert "from os import (\n    path,\n    sep,\n)\n" in text
+    # And `import json` lands after the second multi-line block.
+    pos_close = text.index("\n)\n", text.index("from os import"))
+    pos_new = text.index("import json")
+    assert pos_close < pos_new
+
+
+def test_add_import_after_multiline_typescript_import_block(tmp_path: Path) -> None:
+    """Same regression for TS ``import { ... } from "..."`` multi-line
+    blocks: the imports table records the start line; the insert point
+    must be the actual end of the statement, not the start."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "planningActions.ts").write_text(
+        "import {\n"
+        "  foo,\n"
+        "  bar,\n"
+        "} from \"./utils\"\n"
+        "\n"
+        "import type {\n"
+        "  DeviceData,\n"
+        "} from \"./types\"\n"
+        "\n"
+        "export function run(): void {}\n"
+    )
+    index_root(repo)
+
+    result = add_import(
+        "planningActions.ts",
+        'import { newThing } from "./newPlace"',
+        root=repo,
+    )
+    assert "error" not in result, result
+    text = (repo / "planningActions.ts").read_text()
+    # Both original multi-line imports must be intact.
+    assert 'import {\n  foo,\n  bar,\n} from "./utils"\n' in text
+    assert 'import type {\n  DeviceData,\n} from "./types"\n' in text
+    # The new line lands after the second block, before the function.
+    pos_types_close = text.index('} from "./types"')
+    pos_new = text.index('import { newThing } from "./newPlace"')
+    pos_fn = text.index("export function run()")
+    assert pos_types_close < pos_new < pos_fn

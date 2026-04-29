@@ -54,6 +54,37 @@ def _import_block_lines(idx, abs_file: str) -> list[int]:
     return [r["line"] for r in rows]
 
 
+def _last_import_end_line(lines: list[str], start_line_1based: int) -> int:
+    """Return the 1-based last line of the import statement that begins
+    at ``start_line_1based``.
+
+    The imports table only records the start line of each statement,
+    which is wrong for multi-line imports (Python ``from x import (a,
+    b,)`` or TS ``import {\\n a,\\n b\\n} from "x"``): inserting
+    "after the start" splits the statement in half and corrupts the
+    file. Issue #24.
+
+    We scan forward from the start line tracking ``(`` / ``{`` depth.
+    Both Python and TS multi-line imports close exactly when both
+    counters are non-positive, which makes the check language-agnostic
+    (no string-literal handling needed because import paths in either
+    language can't contain unescaped brackets that would throw off the
+    count in practice).
+    """
+    n = len(lines)
+    if start_line_1based < 1 or start_line_1based > n:
+        return start_line_1based
+    depth_paren = 0
+    depth_brace = 0
+    for i in range(start_line_1based - 1, n):
+        ln = lines[i]
+        depth_paren += ln.count("(") - ln.count(")")
+        depth_brace += ln.count("{") - ln.count("}")
+        if depth_paren <= 0 and depth_brace <= 0:
+            return i + 1
+    return n
+
+
 def _post_docstring_insert_index(path: Path, lines: list[str]) -> int:
     """Pick the right insert index for a NEW import in a file with no imports.
 
@@ -201,8 +232,13 @@ def add_import(
 
         block_lines = _import_block_lines(idx, str(path))
         if block_lines:
-            # Append directly after the last existing import line.
-            insert_idx = max(block_lines)  # 1-based last import line; insert AFTER
+            # The imports table records each statement's START line.
+            # For a multi-line import (TS ``import {\n a,\n b\n}
+            # from "x"`` or Python ``from x import (\n a,\n b\n)``)
+            # we have to walk forward to the actual end so we don't
+            # splice the new line in the middle of an existing
+            # statement and break the file. Issue #24.
+            insert_idx = _last_import_end_line(lines, max(block_lines))
         else:
             # No existing imports: insert AFTER a leading module
             # docstring if there is one (Python convention), else at
