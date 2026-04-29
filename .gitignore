@@ -13,3 +13,4 @@ build/
 uv.lock
 .claude/
 opencode/node_modules/
+opencode/nostream/node_modules/

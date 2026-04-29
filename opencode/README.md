@@ -12,10 +12,16 @@ opencode/
 ├── tools/
 │   ├── snapctx.ts             # 18 tool wrappers (all snapctx read + write ops)
 │   └── _snapctx_writer.py     # Python bridge for ops not in the snapctx CLI
+├── nostream/                  # OPTIONAL: kill the typewriter effect on responses
+│   └── README.md              # see opencode/nostream/README.md for details
 └── README.md                  # this file
 ```
 
 The tool file uses opencode's filename-prefix convention: each export becomes `snapctx_<name>` (so `export const context = …` → tool name `snapctx_context`, `export const edit_symbol = …` → `snapctx_edit_symbol`, etc.).
+
+## Optional: turn off the typewriter effect
+
+`opencode/nostream/` is a separate, opt-in integration that makes assistant responses appear all at once instead of streaming token-by-token. Provider-SDK wrappers + plugins that hook opencode's plugin API — no fork, survives upgrades, covers the common providers (`opencode` zen, `openai`, `anthropic`, `google`, `github-copilot`, plus user-declared OpenAI-compatible providers). See [`opencode/nostream/README.md`](nostream/README.md) for install + how it works.
 
 ## Tools wired
 

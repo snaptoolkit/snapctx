@@ -1,0 +1,14 @@
+{
+  "name": "snapctx-opencode-nostream",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Buffered (non-typewriter) responses for opencode — wraps each provider's LanguageModelV3 with a middleware that drains the upstream SSE then replays it in one tick.",
+  "dependencies": {
+    "@ai-sdk/anthropic": "3.0.71",
+    "@ai-sdk/google": "3.0.63",
+    "@ai-sdk/openai": "3.0.53",
+    "@ai-sdk/openai-compatible": "2.0.41",
+    "ai": "6.0.168"
+  }
+}
