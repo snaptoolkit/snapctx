@@ -18,6 +18,10 @@ Stable surface — anything imported here is expected to keep working:
 from snapctx.api._context import context
 from snapctx.api._edit import delete_symbol, edit_symbol
 from snapctx.api._edit_batch import edit_symbol_batch
+from snapctx.api._edit_sr import (
+    edit_symbol_search_replace,
+    edit_symbol_search_replace_batch,
+)
 from snapctx.api._files import create_file, delete_file, move_file
 from snapctx.api._find import find_literal
 from snapctx.api._graph import expand
@@ -27,6 +31,7 @@ from snapctx.api._indexer import index_root
 from snapctx.api._insert import insert_symbol
 from snapctx.api._map import map_repo
 from snapctx.api._rename import rename_symbol
+from snapctx.api._skeleton import session_skeleton
 from snapctx.api._multi import (
     add_import_multi,
     context_multi,
@@ -62,6 +67,8 @@ __all__ = [
     "edit_symbol",
     "edit_symbol_batch",
     "edit_symbol_multi",
+    "edit_symbol_search_replace",
+    "edit_symbol_search_replace_batch",
     "expand",
     "expand_multi",
     "find_literal",
@@ -83,4 +90,5 @@ __all__ = [
     "rename_symbol",
     "search_code",
     "search_code_multi",
+    "session_skeleton",
 ]
