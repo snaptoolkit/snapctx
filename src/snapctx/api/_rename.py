@@ -37,6 +37,7 @@ from pathlib import Path
 from snapctx.api._common import open_index, resolve_qname
 from snapctx.api._edit_batch import edit_symbol_batch
 from snapctx.index import sha_bytes
+from snapctx.qname import validate_writable_qname
 
 
 def rename_symbol(
@@ -54,7 +55,11 @@ def rename_symbol(
     Returns ``{"old_qname", "new_qname", "edits_applied",
     "imports_updated", "errors", "reindex"}`` on success, or a
     structured ``{"error", "hint"}`` on top-level failure.
+
+    Raises ``ValueError`` if ``old_qname`` is empty, malformed, or has
+    an empty symbol after the colon.
     """
+    validate_writable_qname(old_qname)
     if scope is not None:
         return {
             "error": "scope_unsupported",

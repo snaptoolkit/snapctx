@@ -45,6 +45,7 @@ from pathlib import Path
 
 from snapctx.api._common import open_index, refresh_file_in_index, resolve_qname
 from snapctx.index import sha_bytes
+from snapctx.qname import validate_writable_qname
 
 _PYTHON_SUFFIXES = (".py", ".pyi")
 _TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".jsx", ".js", ".mjs", ".cjs")
@@ -75,6 +76,7 @@ def edit_symbol_search_replace(
     * ``no_change`` — ``search == replace``; nothing to do. Treated as
       an error so the agent learns not to emit no-ops.
     """
+    validate_writable_qname(qname)
     if scope is not None:
         return {
             "qname": qname,
@@ -249,6 +251,14 @@ def edit_symbol_search_replace_batch(
         }
     if not edits:
         return {"applied": [], "errors": [], "files_touched": 0}
+
+    # Fail-loud pre-pass: same reason as ``edit_symbol_batch`` — an
+    # empty-symbol qname is silently destructive, so reject the whole
+    # batch before any I/O.
+    for edit in edits:
+        q = edit.get("qname") if isinstance(edit, dict) else None
+        if q is not None:
+            validate_writable_qname(q)
 
     root_path = Path(root).resolve()
     idx = open_index(root_path, scope=None)

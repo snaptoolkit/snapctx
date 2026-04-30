@@ -20,6 +20,7 @@ from pathlib import Path
 
 from snapctx.api._common import open_index, refresh_file_in_index, resolve_qname
 from snapctx.index import sha_bytes
+from snapctx.qname import validate_writable_qname
 
 # Suffixes for which we run a Python AST parse on the candidate file
 # before writing.
@@ -47,6 +48,7 @@ def delete_symbol(
     Returns ``{"qname", "file", "lines_deleted", "reindex"}`` or
     a structured error.
     """
+    validate_writable_qname(qname)
     if scope is not None:
         return {
             "qname": qname,
@@ -211,7 +213,12 @@ def edit_symbol(
       agent should re-query (``source`` / ``find``) and retry.
     * ``read_failed`` / ``write_failed`` — filesystem error; message
       contains the underlying exception.
+
+    Raises ``ValueError`` if ``qname`` is empty, malformed, or has an
+    empty symbol after the colon (silently destructive — would have
+    been treated as "the whole module").
     """
+    validate_writable_qname(qname)
     if scope is not None:
         return {
             "qname": qname,

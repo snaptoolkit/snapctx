@@ -32,6 +32,7 @@ from pathlib import Path
 
 from snapctx.api._common import open_index, resolve_qname
 from snapctx.index import sha_bytes
+from snapctx.qname import validate_writable_qname
 
 _PYTHON_SUFFIXES = (".py", ".pyi")
 _TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".jsx", ".js", ".mjs", ".cjs")
@@ -58,6 +59,15 @@ def edit_symbol_batch(
         }
     if not edits:
         return {"applied": [], "errors": [], "files_touched": 0}
+
+    # Fail-loud pre-pass: an empty-symbol qname (``"module:"``) used to
+    # be silently destructive ("the whole module"). Reject the WHOLE
+    # batch if any edit has one — the agent must see a tool-call
+    # failure, not a half-success that already mutated other files.
+    for edit in edits:
+        q = edit.get("qname") if isinstance(edit, dict) else None
+        if q is not None:
+            validate_writable_qname(q)
 
     root_path = Path(root).resolve()
     idx = open_index(root_path, scope=None)

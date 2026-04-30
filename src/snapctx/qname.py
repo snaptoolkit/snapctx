@@ -77,3 +77,46 @@ def split_identifier(name: str) -> list[str]:
 def identifier_parts(name: str) -> str:
     """Space-joined identifier tokens, suitable for an FTS5 column."""
     return " ".join(split_identifier(name))
+
+
+def validate_writable_qname(qname: str) -> None:
+    """Raise ``ValueError`` if ``qname`` is not a valid target for a
+    write primitive.
+
+    Write primitives need a complete ``module:Symbol`` (Python) or
+    ``path:Symbol`` (TS/JS) — empty-symbol qnames like ``module:``
+    are silently destructive (they get treated as "the whole
+    module") so we reject them at the boundary.
+
+    Rejects:
+
+    * ``None`` and non-strings (``TypeError``).
+    * empty / whitespace-only strings.
+    * qnames missing the ``:`` separator entirely (e.g. ``"pkg.mod"``).
+    * qnames with an empty module half (e.g. ``":Symbol"``).
+    * qnames with an empty symbol half (e.g. ``"pkg.mod:"``) — this is
+      the silent data-loss case we hit in production.
+    """
+    if not isinstance(qname, str):
+        raise TypeError(
+            f"invalid qname for write op: expected str, got "
+            f"{type(qname).__name__}"
+        )
+    if not qname.strip():
+        raise ValueError(
+            f"invalid qname for write op: {qname!r} (empty or whitespace-only)"
+        )
+    if ":" not in qname:
+        raise ValueError(
+            f"invalid qname for write op: {qname!r} "
+            "(missing ':' separator — expected 'module:Symbol')"
+        )
+    module_part, _, symbol_part = qname.partition(":")
+    if not module_part.strip():
+        raise ValueError(
+            f"invalid qname for write op: {qname!r} (empty module before colon)"
+        )
+    if not symbol_part.strip():
+        raise ValueError(
+            f"invalid qname for write op: {qname!r} (empty symbol after colon)"
+        )

@@ -29,6 +29,7 @@ from typing import Literal
 
 from snapctx.api._common import open_index, resolve_qname
 from snapctx.index import sha_bytes
+from snapctx.qname import validate_writable_qname
 
 _PYTHON_SUFFIXES = (".py", ".pyi")
 _TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".jsx", ".js", ".mjs", ".cjs")
@@ -52,7 +53,11 @@ def insert_symbol(
     * ``read_failed`` / ``write_failed`` — filesystem error.
     * ``invalid_position`` — ``position`` not ``"before"`` or ``"after"``.
     * ``scope_unsupported`` — vendor scopes are read-only.
+
+    Raises ``ValueError`` if ``anchor_qname`` is empty, malformed, or
+    has an empty symbol after the colon.
     """
+    validate_writable_qname(anchor_qname)
     if scope is not None:
         return {
             "anchor": anchor_qname,
