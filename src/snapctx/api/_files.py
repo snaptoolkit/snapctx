@@ -102,7 +102,9 @@ def create_file(
         return {"error": "write_failed", "hint": str(e)}
 
     from snapctx.api._indexer import index_root
+    from snapctx.api._preload import invalidate_preloads
     refresh = index_root(root_path)
+    invalidate_preloads(root_path)
     return {
         "file": str(target),
         "bytes_written": len(content.encode("utf-8")),
@@ -167,7 +169,9 @@ def delete_file(
         idx.close()
 
     from snapctx.api._indexer import index_root
+    from snapctx.api._preload import invalidate_preloads
     refresh = index_root(root_path)
+    invalidate_preloads(root_path)
     return {
         "file": str(target),
         "symbols_dropped": symbol_count,
@@ -244,7 +248,9 @@ def move_file(
         return {"error": "move_failed", "hint": str(e)}
 
     from snapctx.api._indexer import index_root
+    from snapctx.api._preload import invalidate_preloads
     refresh = index_root(root_path)
+    invalidate_preloads(root_path)
     return {
         "old_file": str(src),
         "new_file": str(dst),

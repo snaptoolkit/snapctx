@@ -14,3 +14,7 @@ uv.lock
 .claude/
 opencode/node_modules/
 opencode/nostream/node_modules/
+.idea/
+.vscode/
+.fleet/
+.zed/

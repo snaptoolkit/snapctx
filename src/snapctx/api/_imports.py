@@ -156,7 +156,9 @@ def _write_and_reindex(path: Path, new_text: str, root_path: Path) -> dict:
     except OSError as e:
         return {"error": "write_failed", "hint": str(e)}
     from snapctx.api._indexer import index_root
+    from snapctx.api._preload import invalidate_preloads
     refresh = index_root(root_path)
+    invalidate_preloads(root_path)
     return {
         "reindex": {
             "files_updated": refresh["files_updated"],

@@ -22,8 +22,10 @@ ALWAYS_SKIP = {
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     # Generic build outputs.
     "dist", "build", ".tox",
-    # snapctx's own state.
-    ".snapctx",
+    # snapctx's own state. ``.neargrep`` is the project's pre-rename name
+    # — old indexes / artifact files from before the ``snapctx`` rename
+    # still pollute long-lived repos that haven't been re-indexed.
+    ".snapctx", ".neargrep",
     # JS/TS framework build outputs. These are gitignored in well-formed
     # projects but a sub-project scan in multi-root mode may not see the
     # parent's .gitignore, so an explicit name list catches them

@@ -237,7 +237,9 @@ def rename_symbol(
     # reindexed for the body edits, but a second pass is cheap and
     # ensures the imports table is fresh).
     from snapctx.api._indexer import index_root
+    from snapctx.api._preload import invalidate_preloads
     refresh = index_root(root_path)
+    invalidate_preloads(root_path)
 
     return {
         "old_qname": canonical,

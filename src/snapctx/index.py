@@ -93,6 +93,22 @@ CREATE TABLE IF NOT EXISTS symbol_vectors (
     vector  BLOB NOT NULL,
     FOREIGN KEY (qname) REFERENCES symbols(qname) ON DELETE CASCADE
 );
+
+-- Per-mode "project preload" cache. Holds an opaque blob (e.g. the
+-- rendered project map the TUI prepends to every prompt) keyed by an
+-- arbitrary mode string. ``source_version`` is a hash of the index's
+-- file SHAs at write time; readers compare it to the current value and
+-- treat a mismatch as a miss. Auto-invalidated by every successful
+-- write primitive in ``snapctx.api``.
+--
+-- One preloads table per index.db (i.e. per root) — the per-root DB
+-- layout (``db_path_for``) means we don't need a ``root_path`` column.
+CREATE TABLE IF NOT EXISTS preloads (
+    mode            TEXT PRIMARY KEY,
+    content         TEXT NOT NULL,
+    source_version  TEXT NOT NULL,
+    generated_at    INTEGER NOT NULL
+);
 """
 
 

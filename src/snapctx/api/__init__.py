@@ -30,6 +30,12 @@ from snapctx.api._imports import add_import, remove_import
 from snapctx.api._indexer import index_root
 from snapctx.api._insert import insert_symbol
 from snapctx.api._map import map_repo
+from snapctx.api._preload import (
+    current_source_version,
+    get_preload,
+    invalidate_preloads,
+    set_preload,
+)
 from snapctx.api._rename import rename_symbol
 from snapctx.api._skeleton import session_skeleton
 from snapctx.api._multi import (
@@ -61,6 +67,7 @@ __all__ = [
     "context",
     "context_multi",
     "create_file",
+    "current_source_version",
     "delete_file",
     "delete_symbol",
     "delete_symbol_multi",
@@ -73,6 +80,7 @@ __all__ = [
     "expand_multi",
     "find_literal",
     "find_literal_multi",
+    "get_preload",
     "get_source",
     "get_source_multi",
     "grep_files",
@@ -80,6 +88,7 @@ __all__ = [
     "index_root",
     "insert_symbol",
     "insert_symbol_multi",
+    "invalidate_preloads",
     "map_repo",
     "map_repo_multi",
     "move_file",
@@ -91,4 +100,5 @@ __all__ = [
     "search_code",
     "search_code_multi",
     "session_skeleton",
+    "set_preload",
 ]

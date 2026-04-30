@@ -111,7 +111,19 @@ def hybrid_weights(qclass: str) -> tuple[float, float]:
     return 1.0, 1.5
 
 
-DOC_LANGUAGES = frozenset({"markdown", "html", "text"})
+# Languages whose symbols carry no "executable code" semantics, just text or
+# data. On natural-language queries that have at least one code-language
+# seed in the candidate pool, we demote these so e.g. a ``messages/el.json``
+# entry titled ``"navigation"`` doesn't outrank the actual TS routing code
+# on a query like *"how does navigation work"*. Excluded when the agent
+# explicitly asks for them via ``kind="constant"`` or scoped grep — those
+# paths bypass the natural-query gate.
+DOC_LANGUAGES = frozenset({
+    "markdown", "html", "text",
+    # Data formats — top-level keys often coincide with conceptual query
+    # terms but they aren't where the logic lives.
+    "json", "yaml", "toml", "env",
+})
 
 
 def rrf_merge(
@@ -124,6 +136,7 @@ def rrf_merge(
     vec_weight: float = 1.5,
     test_penalty: float = 0.6,
     docs_penalty: float = 0.7,
+    path_hint_boost: float = 1.5,
     query: str | None = None,
 ):
     """Weighted Reciprocal Rank Fusion of two ranked lists of (row, score) tuples.
@@ -137,11 +150,18 @@ def rrf_merge(
         their top hit, but tests still appear (just demoted).
       * ``docs_penalty=0.7`` — for natural / mixed queries where at least
         one *code-language* candidate is in the pool, demote markdown /
-        html / text seeds. The HTML+templates parser indexes prose, so a
-        feature query like "how does X work" otherwise pulls a README
-        heading above the implementation. The penalty is conditional:
-        when only doc seeds exist (e.g. "where is the install guide"
-        in a docs-only repo), no penalty applies and docs win cleanly.
+        html / text / json / yaml / toml seeds. The HTML+templates and
+        config parsers index prose and config keys; on conceptual
+        queries those tokens otherwise pull README headings or
+        ``messages/*.json`` keys above real implementations. Conditional:
+        only fires when code seeds also exist, so doc-only repos still
+        rank docs cleanly.
+      * ``path_hint_boost=1.5`` — when the query contains a path-shape
+        token (``frontend/i18n``, ``backend/parser``), symbols whose
+        ``file`` path matches that hint get their score multiplied.
+        Lets the agent disambiguate "tell me about routing" between
+        ``messages/el.json`` and ``frontend/i18n/routing.ts`` simply
+        by adding the path hint to the query.
 
     When ``query`` is a single identifier-shaped token (``Button``, ``url_for``,
     ``StateCreator``), symbols whose simple name equals that token receive a
@@ -152,6 +172,7 @@ def rrf_merge(
     name_match_token = _exact_name_token(query)
     qclass = classify_query(query) if query else "mixed"
     docs_demotion_active = qclass in ("natural", "mixed")
+    path_hints = _path_hints(query) if query else []
 
     scores: dict[str, float] = {}
     kept: dict[str, object] = {}
@@ -182,8 +203,53 @@ def rrf_merge(
             and _row_language(row) in DOC_LANGUAGES
         ):
             scores[q] *= docs_penalty
+        if path_hints and _matches_any_hint(_row_file(row), path_hints):
+            scores[q] *= path_hint_boost
     ordered = sorted(scores.items(), key=lambda kv: -kv[1])
     return [(kept[q], s) for q, s in ordered[:limit]]
+
+
+def _path_hints(query: str) -> list[str]:
+    """Extract path-shape tokens from a query.
+
+    A path hint is a token containing ``/`` whose segments look directory-ish
+    (alphanumeric + ``-`` / ``_`` / ``.``). We require at least one slash
+    AND at least one segment ≥ 3 chars, so a stray ``a/b`` or a regex
+    fragment like ``\\w+/\\w+`` doesn't trigger.
+    """
+    out: list[str] = []
+    for raw in query.split():
+        # Strip trailing punctuation that often follows a path in prose.
+        token = raw.strip(".,;:!?\"'`()[]{}")
+        if "/" not in token:
+            continue
+        # Reject tokens that look like URLs or regex fragments — a leading
+        # protocol (``http:``) means the user wants a literal, not a path
+        # hint, and they should be using ``snapctx_grep`` for that anyway.
+        if "://" in token:
+            continue
+        segments = [s for s in token.split("/") if s]
+        if not segments:
+            continue
+        if all(_PATH_SEGMENT_RE.fullmatch(s) for s in segments) and any(
+            len(s) >= 3 for s in segments
+        ):
+            out.append(token.strip("/"))
+    return out
+
+
+_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9._\-]+")
+
+
+def _matches_any_hint(file_path: str, hints: list[str]) -> bool:
+    """``True`` if ``file_path`` contains any of the path hints as a substring.
+
+    Substring rather than prefix because absolute paths in the index
+    include the repo root, and a hint like ``frontend/i18n`` should match
+    ``/Users/x/biblereader/frontend/i18n/routing.ts`` regardless of where
+    the user is running from.
+    """
+    return any(hint in file_path for hint in hints)
 
 
 def _row_language(row) -> str:
@@ -195,6 +261,19 @@ def _row_language(row) -> str:
     """
     try:
         return row["language"] or ""
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+def _row_file(row) -> str:
+    """``row['file']`` if present; ``''`` otherwise.
+
+    Search results commonly come back as ``sqlite3.Row`` objects, which do not
+    implement ``dict.get``. Keep file lookups tolerant for mock rows and any
+    partial projections used in tests.
+    """
+    try:
+        return row["file"] or ""
     except (KeyError, IndexError, TypeError):
         return ""
 

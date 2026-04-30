@@ -216,7 +216,9 @@ def edit_symbol_search_replace(
         idx.close()
 
     from snapctx.api._indexer import index_root
+    from snapctx.api._preload import invalidate_preloads
     refresh = index_root(root_path)
+    invalidate_preloads(root_path)
     result["reindex"] = {
         "files_updated": refresh["files_updated"],
         "files_removed": refresh["files_removed"],
@@ -312,7 +314,9 @@ def edit_symbol_search_replace_batch(
 
     if files_touched > 0:
         from snapctx.api._indexer import index_root
+        from snapctx.api._preload import invalidate_preloads
         refresh = index_root(root_path)
+        invalidate_preloads(root_path)
         reindex = {
             "files_updated": refresh["files_updated"],
             "files_removed": refresh["files_removed"],

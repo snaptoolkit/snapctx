@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from snapctx.api import expand, get_source, outline, search_code
@@ -612,3 +613,83 @@ def test_search_no_kind_suggestion_when_multiple_kinds_share_name(tmp_path: Path
     # Two methods named login exist, but query doesn't match either.
     # No kind_suggestion because multiple kinds match.
     assert "kind_suggestion" not in out
+
+
+def test_path_hint_boosts_matching_files() -> None:
+    """When the query carries a path-shape token, files matching that path
+    rank above otherwise-similar files elsewhere in the repo. Lets the agent
+    say "tell me about routing in frontend/i18n" and have the ranker
+    actually listen, rather than returning generic ``routing`` matches from
+    backend or docs.
+    """
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str, file: str, language: str = "typescript") -> dict:
+        return {"qname": qname, "file": file, "language": language}
+
+    # Both files match the term ``routing`` in lex+vec; without the hint
+    # the ranking is a tie. With ``frontend/i18n`` in the query, the
+    # frontend file wins.
+    matching = row("frontend/i18n/routing:defineRouting", "/r/frontend/i18n/routing.ts")
+    other = row("backend.routes:setup", "/r/backend/routes.py", "python")
+    lex = [(matching, -3.0), (other, -3.0)]
+    vec = [(matching, 0.7), (other, 0.7)]
+
+    no_hint = rrf_merge(lex, vec, limit=2, query="routing setup")
+    # Tied — order is preserved from lexical first-seen.
+    assert {r["qname"] for r, _ in no_hint} == {matching["qname"], other["qname"]}
+
+    with_hint = rrf_merge(lex, vec, limit=2, query="routing setup frontend/i18n")
+    assert with_hint[0][0]["qname"] == matching["qname"]
+
+
+def test_path_hint_boost_accepts_sqlite_rows() -> None:
+    """Production search results are ``sqlite3.Row`` objects, not plain dicts."""
+    from snapctx.api._ranking import rrf_merge
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT ? AS qname, ? AS file, ? AS language",
+            (
+                "frontend/i18n/routing:defineRouting",
+                "/r/frontend/i18n/routing.ts",
+                "typescript",
+            ),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    merged = rrf_merge([(row, -1.0)], [(row, 0.8)], limit=1, query="routing setup frontend/i18n")
+    assert merged[0][0]["qname"] == "frontend/i18n/routing:defineRouting"
+
+
+def test_path_hint_extractor_accepts_real_paths_rejects_garbage() -> None:
+    from snapctx.api._ranking import _path_hints
+
+    assert _path_hints("how does routing work in frontend/i18n") == ["frontend/i18n"]
+    assert _path_hints("backend/parser stuff") == ["backend/parser"]
+    assert _path_hints("a/b") == []                  # segments too short
+    assert _path_hints("https://example.com/x") == []  # URL
+    assert _path_hints("just words no path") == []
+    # Trailing punctuation tolerated.
+    assert _path_hints("(see frontend/i18n)") == ["frontend/i18n"]
+
+
+def test_docs_penalty_now_demotes_json_modules_on_natural_query() -> None:
+    """Real biblereader case: a query like "navigation locale request"
+    matched ``messages/el.json`` keys above ``frontend/i18n/routing.ts``.
+    Extending DOC_LANGUAGES to include JSON/YAML/TOML demotes those
+    config keys when code seeds exist in the pool."""
+    from snapctx.api._ranking import rrf_merge
+
+    code = {"qname": "frontend/i18n/routing:defineRouting", "file": "/r/frontend/i18n/routing.ts", "language": "typescript"}
+    config_key = {"qname": "messages/el.json:navigation", "file": "/r/frontend/messages/el.json", "language": "json"}
+
+    # JSON ranks first in both before docs penalty.
+    lex = [(config_key, -1.0), (code, -3.0)]
+    vec = [(config_key, 0.85), (code, 0.70)]
+    merged = rrf_merge(lex, vec, limit=2, query="how does navigation locale request work")
+    assert merged[0][0]["qname"] == code["qname"]
