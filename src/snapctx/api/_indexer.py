@@ -141,6 +141,7 @@ def index_root(
         # clean slate of None callee_qnames to fill in. Order matters.
         demoted = idx.demote_unresolved_calls()
         idx.promote_self_calls()
+        idx.promote_local_calls()
         idx.promote_imported_calls()
         embedded = _embed_missing(idx)
         idx.stamp_parser_version()

@@ -540,6 +540,90 @@ class Index:
             )
             return cur.rowcount
 
+    def promote_local_calls(self) -> int:
+        """Resolve bare-name calls that target a sibling symbol in the
+        SAME module (same source file).
+
+        Surfaced by the experiment-strategy benchmark (T2): a function
+        ``edit_symbol_batch`` calls ``_apply_to_one_file()`` defined in
+        the same file. The Python parser records this as a bare-name
+        call (``callee_name='_apply_to_one_file'``, ``callee_qname=NULL``)
+        because at parse time it can't know which scope owns the name.
+        At post-pass time we DO know — both rows live under the same
+        ``file`` value, and the callee's qname is always the caller's
+        module-half plus the bare name.
+
+        For each unresolved bare-name call (no dots, no
+        ``self.``/``this.``/``super.``/``cls.`` prefix):
+          (a) take the caller's qname; the module-half is everything
+              before the last ``:``,
+          (b) try to find a symbol with qname ``<module>:<callee_name>``
+              defined in the SAME file as the caller,
+          (c) if exactly one such symbol exists, resolve. Class methods
+              with the same simple name (different ``Class.method``
+              qnames) don't trigger because their member-half includes
+              the class prefix.
+
+        Runs BEFORE ``promote_imported_calls`` so the rarer
+        cross-module pass doesn't mistakenly match a name that's
+        actually local. Returns the number of rows updated.
+        """
+        # Map (file, qname-without-colon-suffix) → set of qnames in that
+        # file. We need the file equality for safety: two unrelated
+        # modules could have a function named ``foo``; matching on
+        # ``module:foo`` alone would route to the first one we find.
+        sym_rows = self.conn.execute(
+            "SELECT qname, file FROM symbols "
+            "WHERE kind IN ('function', 'method', 'class')"
+        ).fetchall()
+        # Index: (caller_module, callee_name, file) → matching qname.
+        # Methods (``Class.method``) are excluded by the qname-shape
+        # check below — we only resolve to top-level same-module symbols.
+        same_module_index: dict[tuple[str, str, str], str] = {}
+        for r in sym_rows:
+            q = r["qname"]
+            mod_half, _, member = q.rpartition(":")
+            if not member or "." in member:
+                # Methods / nested members carry a ``.`` in member; we
+                # only auto-resolve to top-level definitions.
+                continue
+            same_module_index[(mod_half, member, r["file"])] = q
+
+        pending = self.conn.execute(
+            "SELECT rowid, caller_qname, callee_name, file FROM calls "
+            "WHERE callee_qname IS NULL "
+            "  AND callee_name NOT LIKE '%.%' "
+            "  AND callee_name NOT LIKE 'self.%' "
+            "  AND callee_name NOT LIKE 'this.%' "
+            "  AND callee_name NOT LIKE 'super.%' "
+            "  AND callee_name NOT LIKE 'cls.%'"
+        ).fetchall()
+
+        updates: list[tuple[str, int]] = []
+        for row in pending:
+            caller = row["caller_qname"]
+            if not caller or ":" not in caller:
+                continue
+            mod_half = caller.rpartition(":")[0]
+            callee_name = row["callee_name"]
+            target = same_module_index.get(
+                (mod_half, callee_name, row["file"])
+            )
+            if target is not None:
+                updates.append((target, row["rowid"]))
+
+        if not updates:
+            return 0
+        n = 0
+        with self.tx():
+            for guess, rowid in updates:
+                self.conn.execute(
+                    "UPDATE calls SET callee_qname = ? WHERE rowid = ?",
+                    (guess, rowid),
+                )
+                n += 1
+        return n
+
     def promote_imported_calls(self) -> int:
         """Resolve bare-name calls against the caller's imports + symbols.
 
