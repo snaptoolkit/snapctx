@@ -125,8 +125,48 @@ def insert_symbol(
         if new_lines and new_lines[-1] == "":
             # Drop the trailing empty entry from a body that ends with "\n".
             new_lines.pop()
+        # Strip caller-supplied leading/trailing blank lines so they can't
+        # double-up with the separator we add below. Agents often emit a
+        # bare ``def foo():\n    ...`` without padding; we'd otherwise
+        # land it directly against the anchor (PEP 8 violation, no
+        # syntax error so silent until review).
+        while new_lines and new_lines[0].strip() == "":
+            new_lines.pop(0)
+        while new_lines and new_lines[-1].strip() == "":
+            new_lines.pop()
 
-        out = lines[:splice_at] + new_lines + lines[splice_at:]
+        # Pick the right inter-symbol gap based on language + nesting:
+        # PEP 8 wants 2 blanks between top-level defs, 1 between methods.
+        # TS/JS communities settle on 1 either way; markdown / configs
+        # don't have a convention so 1 is the safe default.
+        if path.suffix in _PYTHON_SUFFIXES:
+            gap = 1 if row["parent_qname"] else 2
+        elif path.suffix in _TS_SUFFIXES:
+            gap = 1
+        else:
+            gap = 1
+
+        if position == "after":
+            before_part = list(lines[:splice_at])
+            after_part = list(lines[splice_at:])
+            # Eat any leading blanks that already sit between the anchor
+            # and the next symbol — we'll re-emit exactly ``gap`` of them.
+            while after_part and after_part[0].strip() == "":
+                after_part.pop(0)
+            out = before_part + ([""] * gap if before_part else []) + new_lines
+            if after_part:
+                out += [""] * gap + after_part
+        else:  # before
+            before_part = list(lines[:splice_at])
+            after_part = list(lines[splice_at:])
+            # Eat trailing blanks that sat between the prior content and
+            # the anchor — we'll re-emit exactly ``gap`` of them.
+            while before_part and before_part[-1].strip() == "":
+                before_part.pop()
+            out = before_part
+            if before_part:
+                out += [""] * gap
+            out += new_lines + [""] * gap + after_part
         new_file_text = "\n".join(out)
         if had_trailing_nl:
             new_file_text += "\n"

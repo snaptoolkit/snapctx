@@ -27,20 +27,55 @@ def _build_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_insert_after_method_uses_single_blank_line(tmp_path: Path) -> None:
+    """Methods inside a class get ONE blank line between siblings, not
+    two. The normalizer reads ``parent_qname`` from the anchor's row
+    to pick the right gap.
+    """
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "__init__.py").write_text("")
+    (repo / "pkg" / "shape.py").write_text(
+        "class Box:\n"
+        "    def width(self):\n"
+        "        return 1\n"
+        "\n"
+        "    def height(self):\n"
+        "        return 2\n"
+    )
+    index_root(repo)
+
+    new_method = "    def depth(self):\n        return 3\n"
+    result = insert_symbol(
+        "pkg.shape:Box.height", new_method, root=repo, position="after",
+    )
+    assert "error" not in result, result
+    text = (repo / "pkg" / "shape.py").read_text()
+    # Exactly one blank line between height and depth (PEP 8 method gap).
+    assert "        return 2\n\n    def depth" in text
+    assert "        return 2\n\n\n    def depth" not in text
+
+
 def test_insert_after_anchor_appends_function(tmp_path: Path) -> None:
     repo = _build_repo(tmp_path)
 
-    # Two leading blank lines = PEP-8 spacing between top-level fns.
+    # Caller can omit PEP-8 spacing — insert_symbol normalizes blank
+    # lines around the splice. Bare body, no leading/trailing blanks.
     new_fn = (
-        "\n\ndef sub(a, b):\n"
+        "def sub(a, b):\n"
         '    """Subtract."""\n'
         "    return a - b\n"
     )
     result = insert_symbol("pkg.math:add", new_fn, root=repo, position="after")
 
     assert "error" not in result, result
-    # 2 blank-line prefix + 3 body lines = 5 lines spliced in.
-    assert result["lines_inserted"] == 5
+    # 3 body lines spliced in — the leading/trailing 2-blank gaps are
+    # added by the normalizer and don't count toward lines_inserted.
+    assert result["lines_inserted"] == 3
+    text = (repo / "pkg" / "math.py").read_text()
+    # Top-level Python: must have exactly two blank lines between
+    # ``add``'s body and the new ``sub`` def.
+    assert "    return a + b\n\n\ndef sub" in text
 
     src = get_source("pkg.math:sub", root=repo)
     assert "error" not in src

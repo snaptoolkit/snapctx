@@ -602,18 +602,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p_edit = sub.add_parser(
         "edit",
         help=(
-            "Replace a symbol's body by qname. New body is read from a "
-            "file (positional) or stdin (--stdin)."
+            "Replace a symbol's body by qname. Provide the new body via "
+            "``--body``, a file (positional), or ``--stdin``."
         ),
     )
     p_edit.add_argument("qname", help="Fully qualified symbol name to replace.")
     p_edit.add_argument(
         "body_file", nargs="?", default=None,
-        help="Path to a file containing the new body. Mutually exclusive with --stdin.",
+        help="Path to a file containing the new body. Mutually exclusive with --stdin / --body.",
     )
     p_edit.add_argument(
         "--stdin", action="store_true",
         help="Read the new body from standard input instead of a file.",
+    )
+    p_edit.add_argument(
+        "--body", default=None,
+        help=(
+            "New body as an inline string. Use $'...\\n...' in bash for "
+            "embedded newlines. Mutually exclusive with body_file / --stdin."
+        ),
     )
     p_edit.add_argument("--root", default=".")
 
@@ -621,7 +628,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "insert",
         help=(
             "Insert a new top-level symbol adjacent to an anchor symbol. "
-            "Body read from file or stdin."
+            "Provide the body via ``--body``, a file (positional), or ``--stdin``."
         ),
     )
     p_insert.add_argument(
@@ -635,6 +642,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_insert.add_argument(
         "--stdin", action="store_true",
         help="Read the new text from stdin instead of a file.",
+    )
+    p_insert.add_argument(
+        "--body", default=None,
+        help=(
+            "New symbol text as an inline string. Use $'...\\n...' in "
+            "bash for embedded newlines. Mutually exclusive with "
+            "body_file / --stdin."
+        ),
     )
     p_insert.add_argument(
         "--position", choices=("before", "after"), default="after",
@@ -750,6 +765,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_create_file.add_argument(
         "--stdin", action="store_true",
         help="Read content from stdin instead of a file.",
+    )
+    p_create_file.add_argument(
+        "--content", default=None,
+        help=(
+            "File content as an inline string. Use $'...\\n...' in bash "
+            "for embedded newlines. Mutually exclusive with content_file / --stdin."
+        ),
     )
     p_create_file.add_argument("--root", default=".")
 
@@ -898,28 +920,58 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _resolve_body_content(
+    *,
+    stdin: bool,
+    file_path: str | None,
+    inline: str | None,
+    label: str,
+) -> tuple[str | None, int]:
+    """Resolve content from --stdin, a positional file path, or an inline flag.
+
+    Used by ``edit``, ``insert``, and ``create-file`` so all three accept
+    the same triad of input modes. Exactly one of the three must be set.
+    Returns ``(text, exit_code)`` — ``text is None`` means an error was
+    already written to stderr; the caller should return ``exit_code``.
+    """
+    set_count = (1 if stdin else 0) + (1 if file_path else 0) + (1 if inline is not None else 0)
+    if set_count > 1:
+        sys.stderr.write(
+            f"snapctx: pass at most one of {label}_file, --stdin, "
+            f"--{label.replace('_', '-')}.\n"
+        )
+        return None, 2
+    if inline is not None:
+        return inline, 0
+    if stdin:
+        return sys.stdin.read(), 0
+    if file_path:
+        try:
+            return Path(file_path).read_text(encoding="utf-8"), 0
+        except OSError as e:
+            sys.stderr.write(f"snapctx: cannot read {label}_file: {e}\n")
+            return None, 2
+    sys.stderr.write(
+        f"snapctx: {label} required — pass a file path, --stdin, or "
+        f"--{label.replace('_', '-')}.\n"
+    )
+    return None, 2
+
+
 def _edit_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) -> int:
-    """Read new body from file or stdin, dispatch edit_symbol.
+    """Read new body from --body / file / stdin, dispatch edit_symbol.
 
     Refresh has already happened upstream so the index reflects the
     current file SHA before the staleness check runs.
     """
-    if args.stdin and args.body_file:
-        sys.stderr.write("snapctx: pass either body_file or --stdin, not both.\n")
-        return 2
-    if args.stdin:
-        new_body = sys.stdin.read()
-    elif args.body_file:
-        try:
-            new_body = Path(args.body_file).read_text(encoding="utf-8")
-        except OSError as e:
-            sys.stderr.write(f"snapctx: cannot read body_file: {e}\n")
-            return 2
-    else:
-        sys.stderr.write(
-            "snapctx: edit needs a body — pass a file path or --stdin.\n"
-        )
-        return 2
+    new_body, code = _resolve_body_content(
+        stdin=args.stdin,
+        file_path=args.body_file,
+        inline=args.body,
+        label="body",
+    )
+    if new_body is None:
+        return code
 
     if len(roots) > 1:
         result = edit_symbol_multi(args.qname, new_body, roots=roots, anchor=anchor)
@@ -930,23 +982,15 @@ def _edit_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) ->
 
 
 def _insert_dispatch(args: argparse.Namespace, roots: list[Path], anchor: Path) -> int:
-    """Read new text from file/stdin, dispatch insert_symbol."""
-    if args.stdin and args.body_file:
-        sys.stderr.write("snapctx: pass either body_file or --stdin, not both.\n")
-        return 2
-    if args.stdin:
-        new_text = sys.stdin.read()
-    elif args.body_file:
-        try:
-            new_text = Path(args.body_file).read_text(encoding="utf-8")
-        except OSError as e:
-            sys.stderr.write(f"snapctx: cannot read body_file: {e}\n")
-            return 2
-    else:
-        sys.stderr.write(
-            "snapctx: insert needs a body — pass a file path or --stdin.\n"
-        )
-        return 2
+    """Read new text from --body / file / stdin, dispatch insert_symbol."""
+    new_text, code = _resolve_body_content(
+        stdin=args.stdin,
+        file_path=args.body_file,
+        inline=args.body,
+        label="body",
+    )
+    if new_text is None:
+        return code
 
     if len(roots) > 1:
         result = insert_symbol_multi(
@@ -1081,24 +1125,14 @@ def _edit_batch_dispatch(
 def _create_file_dispatch(
     args: argparse.Namespace, roots: list[Path], anchor: Path,
 ) -> int:
-    if args.stdin and args.content_file:
-        sys.stderr.write(
-            "snapctx: pass either content_file or --stdin, not both.\n"
-        )
-        return 2
-    if args.stdin:
-        content = sys.stdin.read()
-    elif args.content_file:
-        try:
-            content = Path(args.content_file).read_text(encoding="utf-8")
-        except OSError as e:
-            sys.stderr.write(f"snapctx: cannot read content_file: {e}\n")
-            return 2
-    else:
-        sys.stderr.write(
-            "snapctx: create-file needs content — pass a file or --stdin.\n"
-        )
-        return 2
+    content, code = _resolve_body_content(
+        stdin=args.stdin,
+        file_path=args.content_file,
+        inline=args.content,
+        label="content",
+    )
+    if content is None:
+        return code
     result = create_file(args.path, content, root=roots[0])
     _emit(result)
     return 0 if "error" not in result else 1

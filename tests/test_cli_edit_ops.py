@@ -157,6 +157,47 @@ def test_edit_batch_via_stdin(tmp_path: Path) -> None:
     assert "return a + b + 1" in body
 
 
+# ---------- --body flag (edit / insert) ----------
+
+
+def test_edit_via_body_flag(tmp_path: Path) -> None:
+    """``--body`` accepts an inline string — saves agents the round
+    trip of switching to --stdin after a positional path fails."""
+    repo = _build_repo(tmp_path)
+    new_body = "def add(a, b):\n    return a + b + 100\n"
+    with _at(repo):
+        code, out, _ = _run([
+            "edit", "pkg.math:add", "--body", new_body,
+        ])
+    assert code == 0, out
+    assert "return a + b + 100" in (repo / "pkg" / "math.py").read_text()
+
+
+def test_insert_via_body_flag(tmp_path: Path) -> None:
+    repo = _build_repo(tmp_path)
+    new_fn = "def sq(a):\n    return a * a\n"
+    with _at(repo):
+        code, out, _ = _run([
+            "insert", "pkg.math:mul", "--body", new_fn, "--position", "after",
+        ])
+    assert code == 0, out
+    text = (repo / "pkg" / "math.py").read_text()
+    # Whitespace normalization should have produced exactly 2 blank
+    # lines between mul's body and the new top-level sq def.
+    assert "    return a * b\n\n\ndef sq" in text
+
+
+def test_edit_rejects_multiple_body_sources(tmp_path: Path) -> None:
+    repo = _build_repo(tmp_path)
+    with _at(repo):
+        code, _, err = _run([
+            "edit", "pkg.math:add",
+            "--body", "x", "--stdin",
+        ])
+    assert code == 2
+    assert "at most one" in err.lower()
+
+
 # ---------- create-file ----------
 
 
@@ -167,6 +208,17 @@ def test_create_file_via_stdin(tmp_path: Path) -> None:
         code, out, _ = _run(["create-file", "pkg/greeting.py", "--stdin"])
     assert code == 0, out
     assert (repo / "pkg" / "greeting.py").read_text() == content
+
+
+def test_create_file_via_content_flag(tmp_path: Path) -> None:
+    repo = _build_repo(tmp_path)
+    payload = "def hello():\n    return 'hi'\n"
+    with _at(repo):
+        code, out, _ = _run([
+            "create-file", "pkg/greeting.py", "--content", payload,
+        ])
+    assert code == 0, out
+    assert (repo / "pkg" / "greeting.py").read_text() == payload
 
 
 def test_create_file_refuses_existing(tmp_path: Path) -> None:
