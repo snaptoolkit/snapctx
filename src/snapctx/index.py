@@ -109,6 +109,29 @@ CREATE TABLE IF NOT EXISTS preloads (
     source_version  TEXT NOT NULL,
     generated_at    INTEGER NOT NULL
 );
+
+-- HTTP routes extracted from framework-specific configurations:
+-- Django ``urls.py`` and Next.js App Router ``route.{ts,tsx,js}`` files.
+-- Lets agents map URL → handler in one query (``snapctx route``)
+-- instead of grep-and-trace through urlpatterns lists. Each row links
+-- a URL pattern to either a resolved handler qname (when the parser
+-- could trace the import) or just the source file + line for a
+-- callable reference we couldn't follow.
+--
+-- ``method`` is "ANY" for Django (one row per pattern, all HTTP verbs)
+-- or the specific verb for Next.js (one row per exported GET/POST/...).
+-- ``handler_qname`` may be NULL when resolution failed; the caller
+-- still gets the file + line to investigate.
+CREATE TABLE IF NOT EXISTS routes (
+    method          TEXT NOT NULL,
+    path            TEXT NOT NULL,
+    handler_qname   TEXT,
+    defined_in      TEXT NOT NULL,
+    line            INTEGER NOT NULL,
+    framework       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routes_path ON routes(path);
+CREATE INDEX IF NOT EXISTS idx_routes_defined_in ON routes(defined_in);
 """
 
 
@@ -208,7 +231,7 @@ class Index:
         with self.tx():
             for tbl in (
                 "symbols_fts", "symbol_vectors",
-                "symbols", "calls", "imports", "files",
+                "symbols", "calls", "imports", "files", "routes",
             ):
                 self.conn.execute(f"DELETE FROM {tbl}")
 
@@ -332,6 +355,42 @@ class Index:
         return self.conn.execute(
             "SELECT * FROM calls WHERE callee_qname = ? ORDER BY caller_qname, line ASC",
             (callee_qname,),
+        ).fetchall()
+
+    def replace_routes_for_file(
+        self, file: str, rows: list[tuple[str, str, str | None, str, int, str]],
+    ) -> None:
+        """Replace every routes row defined in ``file`` with ``rows``.
+
+        Per-file replacement matches how symbols/calls/imports refresh
+        (forget-then-reinsert) so a re-parsed urls.py can shrink the
+        route table cleanly. Each row tuple is
+        ``(method, path, handler_qname, defined_in, line, framework)``.
+        """
+        with self.tx():
+            self.conn.execute(
+                "DELETE FROM routes WHERE defined_in = ?", (file,),
+            )
+            if rows:
+                self.conn.executemany(
+                    "INSERT INTO routes(method, path, handler_qname, "
+                    "defined_in, line, framework) VALUES (?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+
+    def list_routes(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT method, path, handler_qname, defined_in, line, framework "
+            "FROM routes ORDER BY path, method"
+        ).fetchall()
+
+    def find_routes_by_path(self, path_pattern: str) -> list[sqlite3.Row]:
+        """Return routes whose stored ``path`` exactly equals ``path_pattern``,
+        OR whose stored path is a parameterized form that matches."""
+        return self.conn.execute(
+            "SELECT method, path, handler_qname, defined_in, line, framework "
+            "FROM routes WHERE path = ? ORDER BY method",
+            (path_pattern,),
         ).fetchall()
 
     def imports_for_file(self, file: str) -> list[sqlite3.Row]:

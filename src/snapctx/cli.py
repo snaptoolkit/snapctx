@@ -45,6 +45,8 @@ from snapctx.api import (
     index_root,
     insert_symbol,
     insert_symbol_multi,
+    list_routes,
+    lookup_route,
     map_repo,
     map_repo_multi,
     move_file,
@@ -798,6 +800,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p_move_file.add_argument("new_path", help="New file path.")
     p_move_file.add_argument("--root", default=".")
 
+    p_routes = sub.add_parser(
+        "routes",
+        help=(
+            "List HTTP routes (Django ``urls.py`` patterns + Next.js "
+            "App Router ``route.{ts,tsx,js}`` handlers). With a path "
+            "argument, return the row(s) whose stored path matches. "
+            "Routes auto-extracted at index time; rerun ``snapctx index`` "
+            "after adding/removing url configs."
+        ),
+    )
+    p_routes.add_argument(
+        "path", nargs="?", default=None,
+        help=(
+            "Optional path pattern to look up (exact match — quote it as it "
+            "appears in the urls.py / app/**/route.* file)."
+        ),
+    )
+    p_routes.add_argument("--root", default=".")
+
     p_skeleton = sub.add_parser(
         "skeleton",
         help=(
@@ -910,6 +931,8 @@ def main(argv: list[str] | None = None) -> int:
         return _move_file_dispatch(args, roots, anchor)
     if args.cmd == "skeleton":
         return _skeleton_dispatch(args, roots, anchor)
+    if args.cmd == "routes":
+        return _routes_dispatch(args, roots, anchor)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
@@ -1152,6 +1175,72 @@ def _move_file_dispatch(
     result = move_file(args.old_path, args.new_path, root=roots[0])
     _emit(result)
     return 0 if "error" not in result else 1
+
+
+def _routes_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    """Fan out routes lookup across roots in multi-root mode.
+
+    Each root has its own ``routes`` table (extracted from its own
+    ``urls.py`` / ``app/**/route.*`` files). When the user is at a
+    monorepo parent, list/lookup runs against every root and the
+    response tags rows by which sub-project they came from.
+    """
+    from snapctx.roots import root_label
+    multi = len(roots) > 1
+    aggregated_routes: list[dict] = []
+    matches: list[dict] = []
+    for r in roots:
+        try:
+            if args.path is None:
+                res = list_routes(root=r)
+                items = res.get("routes", [])
+            else:
+                res = lookup_route(args.path, root=r)
+                items = res.get("matches", [])
+        except FileNotFoundError as e:
+            sys.stderr.write(f"snapctx: {r}: {e}\n")
+            continue
+        if multi:
+            label = root_label(r, anchor)
+            for item in items:
+                item = dict(item)
+                item["root"] = label
+                if args.path is None:
+                    aggregated_routes.append(item)
+                else:
+                    matches.append(item)
+        else:
+            if args.path is None:
+                aggregated_routes.extend(items)
+            else:
+                matches.extend(items)
+
+    if args.path is None:
+        payload: dict = {"routes": aggregated_routes}
+        if not aggregated_routes:
+            payload["hint"] = (
+                "No routes indexed across the queried root(s). snapctx "
+                "auto-extracts from Django ``urls.py`` and Next.js "
+                "``app/**/route.{ts,tsx,js}`` at index time. Re-run "
+                "``snapctx index`` if you've just added one."
+            )
+        if multi:
+            payload["roots"] = [root_label(r, anchor) for r in roots]
+    else:
+        payload = {"path": args.path, "matches": matches}
+        if not matches:
+            payload["hint"] = (
+                f"No exact match for path {args.path!r}. Lookup is "
+                "exact-match only — quote the pattern exactly as it "
+                "appears in the urls.py / app/**/route.* file. Use "
+                "``snapctx routes`` to list everything."
+            )
+        if multi:
+            payload["roots"] = [root_label(r, anchor) for r in roots]
+    _emit(payload)
+    return 0
 
 
 def _skeleton_dispatch(

@@ -147,6 +147,13 @@ def index_root(
     finally:
         idx.close()
 
+    # Post-pass D — extract framework routes (Django urls.py + Next.js
+    # App Router). Cheap; routes are a small fraction of files in any
+    # real project. Done after the main idx is closed because route
+    # extraction opens its own short-lived connection per call.
+    from snapctx.api._routes import reextract_all_routes
+    routes_indexed = reextract_all_routes(root_path)
+
     return {
         "root": str(root_path),
         "files_scanned": counts["scanned"],
@@ -156,6 +163,7 @@ def index_root(
         "symbols_indexed": counts["symbols"],
         "calls_demoted": demoted,
         "symbols_embedded": embedded,
+        "routes_indexed": routes_indexed,
         "root_moved": moved,
         "parser_version_rebuilt": parser_version_rebuilt,
     }

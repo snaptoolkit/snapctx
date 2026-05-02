@@ -37,6 +37,7 @@ from snapctx.api._preload import (
     set_preload,
 )
 from snapctx.api._rename import rename_symbol
+from snapctx.api._routes import list_routes, lookup_route
 from snapctx.api._skeleton import session_skeleton
 from snapctx.api._multi import (
     add_import_multi,
