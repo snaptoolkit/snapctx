@@ -24,10 +24,15 @@ from snapctx.api import (
     add_import_multi,
     context,
     context_multi,
+    create_file,
+    delete_file,
     delete_symbol,
     delete_symbol_multi,
     edit_symbol,
+    edit_symbol_batch,
     edit_symbol_multi,
+    edit_symbol_search_replace,
+    edit_symbol_search_replace_batch,
     expand,
     expand_multi,
     find_literal,
@@ -42,6 +47,7 @@ from snapctx.api import (
     insert_symbol_multi,
     map_repo,
     map_repo_multi,
+    move_file,
     outline,
     outline_multi,
     remove_import,
@@ -671,6 +677,105 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_import_rm.add_argument("--root", default=".")
 
+    p_edit_sr = sub.add_parser(
+        "edit-sr",
+        help=(
+            "Surgical search/replace inside a symbol body. The smallest "
+            "edit primitive — emit only the substring that changes, "
+            "not the whole new body. ``search`` must occur exactly once "
+            "in the body (zero → not_found, multiple → ambiguous)."
+        ),
+    )
+    p_edit_sr.add_argument("qname", help="Fully qualified symbol to edit.")
+    p_edit_sr.add_argument(
+        "search",
+        help=(
+            "Exact substring of the symbol body to replace. Use $'\\n...' "
+            "for newlines, or pass via --stdin-edit (search/replace from "
+            "a JSON file)."
+        ),
+    )
+    p_edit_sr.add_argument("replace", help="Replacement substring.")
+    p_edit_sr.add_argument("--root", default=".")
+
+    p_edit_sr_batch = sub.add_parser(
+        "edit-sr-batch",
+        help=(
+            "Apply many search/replace edits in one call. Reads "
+            "``[{qname, search, replace}, ...]`` JSON from stdin or "
+            "a file (positional). Per-file atomic, single re-index."
+        ),
+    )
+    p_edit_sr_batch.add_argument(
+        "edits_file", nargs="?", default=None,
+        help="Path to JSON file with the edit list. Use --stdin to read from stdin.",
+    )
+    p_edit_sr_batch.add_argument(
+        "--stdin", action="store_true",
+        help="Read the JSON edit list from stdin instead of a file.",
+    )
+    p_edit_sr_batch.add_argument("--root", default=".")
+
+    p_edit_batch = sub.add_parser(
+        "edit-batch",
+        help=(
+            "Apply many full-body symbol edits in one call. Reads "
+            "``[{qname, new_body}, ...]`` JSON from stdin or a file. "
+            "Per-file atomic, single re-index. Prefer ``edit-sr-batch`` "
+            "for surgical edits — full-body costs many more output tokens."
+        ),
+    )
+    p_edit_batch.add_argument(
+        "edits_file", nargs="?", default=None,
+        help="Path to JSON file with the edit list.",
+    )
+    p_edit_batch.add_argument(
+        "--stdin", action="store_true",
+        help="Read the JSON edit list from stdin instead of a file.",
+    )
+    p_edit_batch.add_argument("--root", default=".")
+
+    p_create_file = sub.add_parser(
+        "create-file",
+        help=(
+            "Create a new file with content; refuses if path exists. "
+            "Runs syntax pre-flight on Python / TS, writes + reindexes."
+        ),
+    )
+    p_create_file.add_argument("path", help="File path (relative to root, or absolute).")
+    p_create_file.add_argument(
+        "content_file", nargs="?", default=None,
+        help="Path to a file containing the new file's content.",
+    )
+    p_create_file.add_argument(
+        "--stdin", action="store_true",
+        help="Read content from stdin instead of a file.",
+    )
+    p_create_file.add_argument("--root", default=".")
+
+    p_delete_file = sub.add_parser(
+        "delete-file",
+        help=(
+            "Remove a file and drop its symbols from the index. "
+            "Refuses if the path is outside the root."
+        ),
+    )
+    p_delete_file.add_argument("path", help="File path (relative to root, or absolute).")
+    p_delete_file.add_argument("--root", default=".")
+
+    p_move_file = sub.add_parser(
+        "move-file",
+        help=(
+            "Rename a file on disk and reindex. Cross-file import "
+            "callsites are NOT auto-updated — use ``add-import`` / "
+            "``import-remove`` on the affected files (the response "
+            "lists them under ``importing_files``)."
+        ),
+    )
+    p_move_file.add_argument("old_path", help="Existing file path.")
+    p_move_file.add_argument("new_path", help="New file path.")
+    p_move_file.add_argument("--root", default=".")
+
     p_skeleton = sub.add_parser(
         "skeleton",
         help=(
@@ -746,7 +851,11 @@ def main(argv: list[str] | None = None) -> int:
     # index isn't being queried and SHA-skipping its 300+ files is pure
     # waste (~750 ms on a real project). Vendor packages are
     # built-once-and-forget — no per-call refresh needed.
-    write_cmds = ("edit", "insert", "delete", "import-add", "import-remove")
+    write_cmds = (
+        "edit", "insert", "delete", "import-add", "import-remove",
+        "edit-sr", "edit-sr-batch", "edit-batch",
+        "create-file", "delete-file", "move-file",
+    )
     if args.cmd not in write_cmds:
         _resolve_query_scope(roots, args)
     else:
@@ -765,6 +874,18 @@ def main(argv: list[str] | None = None) -> int:
         return _import_add_dispatch(args, roots, anchor)
     if args.cmd == "import-remove":
         return _import_remove_dispatch(args, roots, anchor)
+    if args.cmd == "edit-sr":
+        return _edit_sr_dispatch(args, roots, anchor)
+    if args.cmd == "edit-sr-batch":
+        return _edit_sr_batch_dispatch(args, roots, anchor)
+    if args.cmd == "edit-batch":
+        return _edit_batch_dispatch(args, roots, anchor)
+    if args.cmd == "create-file":
+        return _create_file_dispatch(args, roots, anchor)
+    if args.cmd == "delete-file":
+        return _delete_file_dispatch(args, roots, anchor)
+    if args.cmd == "move-file":
+        return _move_file_dispatch(args, roots, anchor)
     if args.cmd == "skeleton":
         return _skeleton_dispatch(args, roots, anchor)
 
@@ -873,6 +994,128 @@ def _import_remove_dispatch(
         )
     else:
         result = remove_import(args.file, args.statement, root=roots[0])
+    _emit(result)
+    return 0 if "error" not in result else 1
+
+
+def _read_edits_json(args: argparse.Namespace) -> tuple[list[dict] | None, int]:
+    """Read a JSON edit list from --stdin or args.edits_file.
+
+    Returns ``(edits, exit_code)``. ``edits`` is None when an error
+    was already reported on stderr; callers return the exit code.
+    """
+    if args.stdin and args.edits_file:
+        sys.stderr.write(
+            "snapctx: pass either edits_file or --stdin, not both.\n"
+        )
+        return None, 2
+    if args.stdin:
+        raw = sys.stdin.read()
+    elif args.edits_file:
+        try:
+            raw = Path(args.edits_file).read_text(encoding="utf-8")
+        except OSError as e:
+            sys.stderr.write(f"snapctx: cannot read edits_file: {e}\n")
+            return None, 2
+    else:
+        sys.stderr.write(
+            "snapctx: edits required — pass a JSON file or --stdin.\n"
+        )
+        return None, 2
+    try:
+        edits = json.loads(raw)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"snapctx: invalid edit JSON: {e}\n")
+        return None, 2
+    if not isinstance(edits, list):
+        sys.stderr.write(
+            "snapctx: edit JSON must be a list of edit dicts.\n"
+        )
+        return None, 2
+    return edits, 0
+
+
+def _edit_sr_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    """Single search/replace edit. Routes to the multi-root variant via
+    a singleton batch when more than one root is in play — search/
+    replace doesn't have a per-symbol qname-routing wrapper, so a
+    one-element batch through the batch path is the cheapest fan-out.
+    """
+    if len(roots) > 1:
+        # Reuse the batch routing — it picks the right index.
+        edits = [{"qname": args.qname, "search": args.search, "replace": args.replace}]
+        result = edit_symbol_search_replace_batch(edits, root=roots[0])
+    else:
+        result = edit_symbol_search_replace(
+            args.qname, args.search, args.replace, root=roots[0],
+        )
+    _emit(result)
+    return 0 if "error" not in result else 1
+
+
+def _edit_sr_batch_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    edits, code = _read_edits_json(args)
+    if edits is None:
+        return code
+    result = edit_symbol_search_replace_batch(edits, root=roots[0])
+    _emit(result)
+    # Batch can succeed partially; return 0 if any landed, else 1.
+    return 0 if result.get("applied") else (1 if result.get("errors") else 0)
+
+
+def _edit_batch_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    edits, code = _read_edits_json(args)
+    if edits is None:
+        return code
+    result = edit_symbol_batch(edits, root=roots[0])
+    _emit(result)
+    return 0 if result.get("applied") else (1 if result.get("errors") else 0)
+
+
+def _create_file_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    if args.stdin and args.content_file:
+        sys.stderr.write(
+            "snapctx: pass either content_file or --stdin, not both.\n"
+        )
+        return 2
+    if args.stdin:
+        content = sys.stdin.read()
+    elif args.content_file:
+        try:
+            content = Path(args.content_file).read_text(encoding="utf-8")
+        except OSError as e:
+            sys.stderr.write(f"snapctx: cannot read content_file: {e}\n")
+            return 2
+    else:
+        sys.stderr.write(
+            "snapctx: create-file needs content — pass a file or --stdin.\n"
+        )
+        return 2
+    result = create_file(args.path, content, root=roots[0])
+    _emit(result)
+    return 0 if "error" not in result else 1
+
+
+def _delete_file_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    result = delete_file(args.path, root=roots[0])
+    _emit(result)
+    return 0 if "error" not in result else 1
+
+
+def _move_file_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    result = move_file(args.old_path, args.new_path, root=roots[0])
     _emit(result)
     return 0 if "error" not in result else 1
 
