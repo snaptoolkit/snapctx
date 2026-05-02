@@ -190,6 +190,45 @@ def test_delete_symbol_then_edit_resolves_remaining_sibling(tmp_path: Path) -> N
     assert "a * b * 1" in get_source("pkg.math:mul", root=repo)["source"]
 
 
+def test_delete_symbol_removes_decorators_with_function(tmp_path: Path) -> None:
+    """Regression: a Python function\s ``line_start`` is at ``def``,
+    not at its decorator chain. ``delete_symbol`` used to remove only
+    the def + body, leaving the orphaned ``@decorator`` line in place
+    — Python parses it cleanly (the decorator silently re-attaches to
+    the NEXT def), so the syntax pre-flight does not catch it. The
+    deletion must walk back past every contiguous ``@decorator`` line."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "m.py").write_text(
+        "import functools\n"
+        "\n"
+        "\n"
+        "@functools.lru_cache\n"
+        "@functools.wraps(int)\n"
+        "def thing() -> int:\n"
+        "    return 1\n"
+        "\n"
+        "\n"
+        "def other() -> int:\n"
+        "    return 2\n"
+    )
+    index_root(repo)
+
+    result = delete_symbol("m:thing", root=repo)
+    assert "error" not in result, result
+    text = (repo / "m.py").read_text()
+    # Both decorators must be gone — neither one should silently
+    # re-attach to ``other``.
+    assert "@functools.lru_cache" not in text
+    assert "@functools.wraps" not in text
+    assert "def other" in text
+    # And ``other`` must still be a plain (undecorated) function.
+    import ast
+    tree = ast.parse(text)
+    other = next(n for n in tree.body if isinstance(n, ast.FunctionDef))
+    assert other.decorator_list == []
+
+
 # ----- create_file / delete_file / move_file -----
 
 

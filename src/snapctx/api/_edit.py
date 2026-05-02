@@ -120,6 +120,14 @@ def delete_symbol(
         # *between* top-level fns; removing a fn should leave 2, not 3.)
         delete_from = ls - 1
         delete_to = le  # exclusive in slice terms
+        # Walk the start of the delete range backward past any contiguous
+        # @decorator lines, otherwise the orphaned decorator silently
+        # re-attaches to the NEXT def — Python parses it cleanly, so the
+        # syntax pre-flight wouldn't catch it. Decorators are
+        # conceptually part of the symbol and must be deleted with it.
+        if path.suffix in _PYTHON_SUFFIXES:
+            while delete_from > 0 and lines[delete_from - 1].lstrip().startswith("@"):
+                delete_from -= 1
         if delete_from > 0 and lines[delete_from - 1].strip() == "":
             delete_from -= 1
 
