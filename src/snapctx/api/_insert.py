@@ -118,6 +118,12 @@ def insert_symbol(
         # Splice point: 0-based index where new lines should land.
         if position == "before":
             splice_at = ls - 1
+            # Walk backward past any decorator lines so the insertion
+            # lands above the decorator chain, not between @dec and
+            # def (which is a syntax error). Issue #26.
+            if path.suffix in _PYTHON_SUFFIXES:
+                while splice_at > 0 and lines[splice_at - 1].lstrip().startswith("@"):
+                    splice_at -= 1
         else:
             splice_at = le
 

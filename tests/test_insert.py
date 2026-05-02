@@ -172,6 +172,33 @@ def test_insert_then_subsequent_edit_resolves(tmp_path: Path) -> None:
     assert "defensively" in src["source"]
 
 
+def test_insert_before_decorated_anchor_walks_past_decorator(tmp_path: Path) -> None:
+    """Regression for issue #26: a Python anchor records ``line_start``
+    at ``def``, ignoring any preceding ``@decorator`` lines. ``insert
+    --position before`` used to splice between the decorator and the
+    def, producing a syntax error. The splice point must walk back past
+    the contiguous decorator chain."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "probe.py").write_text(
+        "import pytest\n"
+        "\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def thing() -> None:\n"
+        "    return None\n"
+    )
+    index_root(repo)
+
+    result = insert_symbol("probe:thing", "import sys", root=repo, position="before")
+    assert "error" not in result, result
+    text = (repo / "probe.py").read_text()
+    # ``import sys`` must come BEFORE the decorator, not between it and ``def``.
+    assert text.index("import sys") < text.index("@pytest.fixture")
+    # File must still parse.
+    import ast
+    ast.parse(text)
+
+
 def test_opencode_bridge_insert_symbol_arg_mapping(tmp_path: Path) -> None:
     """The opencode TS wrapper sends ``{anchor_qname, position, new_text}``;
     the bridge fans those into ``api.insert_symbol(root=root, **args)``.
