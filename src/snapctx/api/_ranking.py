@@ -126,6 +126,60 @@ DOC_LANGUAGES = frozenset({
 })
 
 
+# Query tokens that imply the user is hunting a routing/HTTP-handler
+# symbol. When any of these tokens appear in the query AND a candidate
+# row carries a routing decorator, the row gets a multiplicative bonus.
+# Surfaced by the biblereader benchmark (B1): ``snapctx search "view"``
+# returned a function called ``read`` deep below class methods named
+# ``read``-anything, because the ranker had no way to tell that a
+# function decorated with ``@api_view(['GET'])`` is the canonical hit.
+_ROUTE_QUERY_TOKENS = frozenset({
+    "api", "endpoint", "view", "route", "handler", "webhook", "url",
+    "request", "controller",
+})
+
+
+# Substring fragments (case-insensitive) that mark a routing decorator
+# across the popular frameworks. Match is on the raw decorator text
+# stored in ``symbols.decorators`` (one decorator per line, including
+# leading ``@``). Conservative — each fragment includes enough syntax
+# (``(``, ``.``, etc.) that benign decorators like ``@cached_property``
+# don't trigger.
+_ROUTE_DECORATOR_FRAGMENTS = (
+    # Django REST Framework
+    "api_view", "@action(", "viewset",
+    # Django function-based view markers
+    "require_http_methods", "require_get", "require_post",
+    # Flask / FastAPI / Express / NestJS — match on the method-call form
+    ".route(", "@app.get(", "@app.post(", "@app.put(", "@app.delete(",
+    "@app.patch(", "@router.get(", "@router.post(", "@router.put(",
+    "@router.delete(", "@router.patch(",
+    # NestJS / typed decorators (capital-leading)
+    "@get(", "@post(", "@put(", "@delete(", "@patch(", "@controller(",
+)
+
+
+def _query_implies_route(query: str | None) -> bool:
+    if not query:
+        return False
+    tokens = {t.lower() for t in tokenize_query(query)}
+    return bool(tokens & _ROUTE_QUERY_TOKENS)
+
+
+def _has_route_decorator(decorators: str | None) -> bool:
+    if not decorators:
+        return False
+    haystack = decorators.lower()
+    return any(frag in haystack for frag in _ROUTE_DECORATOR_FRAGMENTS)
+
+
+def _row_decorators(row) -> str:
+    try:
+        return row["decorators"] or ""
+    except (KeyError, IndexError):
+        return ""
+
+
 def rrf_merge(
     lexical_pairs,
     vector_pairs,
@@ -137,6 +191,7 @@ def rrf_merge(
     test_penalty: float = 0.6,
     docs_penalty: float = 0.7,
     path_hint_boost: float = 1.5,
+    route_decorator_boost: float = 1.5,
     query: str | None = None,
 ):
     """Weighted Reciprocal Rank Fusion of two ranked lists of (row, score) tuples.
@@ -162,6 +217,14 @@ def rrf_merge(
         Lets the agent disambiguate "tell me about routing" between
         ``messages/el.json`` and ``frontend/i18n/routing.ts`` simply
         by adding the path hint to the query.
+      * ``route_decorator_boost=1.5`` — when the query contains a
+        routing-implying token (``api``, ``endpoint``, ``view``,
+        ``route``, ``handler``, …), symbols carrying a routing
+        decorator (``@api_view``, ``@app.get(...)``, ``@route(...)``,
+        ``@Controller(...)``, …) get their score multiplied. Surfaced
+        by the biblereader benchmark: the right Django REST view
+        was ``translation.views:read``, but generic ``read``-shaped
+        method names in the same query pool kept it off the top hits.
 
     When ``query`` is a single identifier-shaped token (``Button``, ``url_for``,
     ``StateCreator``), symbols whose simple name equals that token receive a
@@ -173,6 +236,7 @@ def rrf_merge(
     qclass = classify_query(query) if query else "mixed"
     docs_demotion_active = qclass in ("natural", "mixed")
     path_hints = _path_hints(query) if query else []
+    route_query = _query_implies_route(query)
 
     scores: dict[str, float] = {}
     kept: dict[str, object] = {}
@@ -205,6 +269,8 @@ def rrf_merge(
             scores[q] *= docs_penalty
         if path_hints and _matches_any_hint(_row_file(row), path_hints):
             scores[q] *= path_hint_boost
+        if route_query and _has_route_decorator(_row_decorators(row)):
+            scores[q] *= route_decorator_boost
     ordered = sorted(scores.items(), key=lambda kv: -kv[1])
     return [(kept[q], s) for q, s in ordered[:limit]]
 
