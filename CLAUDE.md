@@ -23,23 +23,23 @@ how the codebase works.** Eating our own dog food has two purposes:
 ### First move for any code question
 
 ```bash
-.venv/bin/snapctx context "<your question>"
+snapctx context "<your question>"
 ```
 
 Examples that work well on this repo:
 
 ```bash
 # Architecture question
-.venv/bin/snapctx context "how does multi-root discovery work"
+snapctx context "how does multi-root discovery work"
 
 # Specific function
-.venv/bin/snapctx context "discover_roots walk up to find index"
+snapctx context "discover_roots walk up to find index"
 
 # Concept / paraphrase
-.venv/bin/snapctx context "weighted reciprocal rank fusion"
+snapctx context "weighted reciprocal rank fusion"
 
 # Exact qname (fast path, ~30 ms)
-.venv/bin/snapctx context "src.snapctx.api._search:search_code"
+snapctx context "src.snapctx.api._search:search_code"
 ```
 
 Returns top symbols with full source, callees + callers (depth 2),

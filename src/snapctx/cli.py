@@ -32,6 +32,7 @@ from snapctx.api import (
     expand_multi,
     find_literal,
     find_literal_multi,
+    get_preload,
     get_source,
     get_source_multi,
     grep_files,
@@ -47,6 +48,8 @@ from snapctx.api import (
     remove_import_multi,
     search_code,
     search_code_multi,
+    session_skeleton,
+    set_preload,
 )
 from snapctx.roots import discover_roots, find_subproject_dirs, has_project_marker, root_label
 from snapctx.vendor import (
@@ -365,7 +368,7 @@ def _build_parser() -> argparse.ArgumentParser:
     output_grp = parser.add_mutually_exclusive_group()
     output_grp.add_argument(
         "--compact", dest="output_style", action="store_const", const="compact",
-        help="Force single-line JSON output (default when stdout is piped — saves ~40% bytes).",
+        help="Force single-line JSON output (default when stdout is piped — saves ~40%% bytes).",
     )
     output_grp.add_argument(
         "--pretty", dest="output_style", action="store_const", const="pretty",
@@ -668,6 +671,39 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_import_rm.add_argument("--root", default=".")
 
+    p_skeleton = sub.add_parser(
+        "skeleton",
+        help=(
+            "Render a project map (paths + qnames + signatures) as raw "
+            "text suitable for preloading into an agent's context. "
+            "Optional per-mode cache in the index DB; cache "
+            "auto-invalidates on snapctx writes via source_version."
+        ),
+    )
+    p_skeleton.add_argument(
+        "--render", choices=("compact", "minimal"), default="compact",
+        help=(
+            "compact: paths + qnames + signatures + module docstrings. "
+            "minimal: paths + qnames only (smaller payload)."
+        ),
+    )
+    p_skeleton.add_argument(
+        "--max-chars", type=int, default=20000,
+        help="Soft cap on output size per root (default: 20000).",
+    )
+    p_skeleton.add_argument(
+        "--cached", action="store_true",
+        help=(
+            "Read from / write to the per-mode preload cache. Hit is a "
+            "SQLite read; miss renders fresh and persists."
+        ),
+    )
+    p_skeleton.add_argument(
+        "--mode", default="default",
+        help="Cache key (default: 'default'). Different keys cache independently.",
+    )
+    p_skeleton.add_argument("--root", default=".")
+
     return parser
 
 
@@ -729,6 +765,8 @@ def main(argv: list[str] | None = None) -> int:
         return _import_add_dispatch(args, roots, anchor)
     if args.cmd == "import-remove":
         return _import_remove_dispatch(args, roots, anchor)
+    if args.cmd == "skeleton":
+        return _skeleton_dispatch(args, roots, anchor)
 
     cmd = _QUERY_BY_NAME.get(args.cmd)
     if cmd is None:
@@ -837,6 +875,62 @@ def _import_remove_dispatch(
         result = remove_import(args.file, args.statement, root=roots[0])
     _emit(result)
     return 0 if "error" not in result else 1
+
+
+def _skeleton_dispatch(
+    args: argparse.Namespace, roots: list[Path], anchor: Path,
+) -> int:
+    """Render a project skeleton per root, optionally cached.
+
+    Output is raw text on stdout — not JSON — because the typical
+    consumer is a hook that pipes it into ``jq -Rs`` to wrap as
+    ``additionalContext``. Multi-root output gets ``=== <label> ===``
+    headers; single-root is bare so callers don't have to strip.
+    """
+    parts: list[str] = []
+    multi = len(roots) > 1
+    for root in roots:
+        blob: str | None = None
+        if args.cached:
+            try:
+                blob = get_preload(root, args.mode)
+            except Exception as e:  # noqa: BLE001
+                sys.stderr.write(
+                    f"snapctx: preload cache read failed for {root}: "
+                    f"{type(e).__name__}: {e}\n"
+                )
+        if blob is None:
+            try:
+                blob = session_skeleton(
+                    [root], render=args.render, max_chars=args.max_chars,
+                )
+            except Exception as e:  # noqa: BLE001
+                sys.stderr.write(
+                    f"snapctx: skeleton render failed for {root}: "
+                    f"{type(e).__name__}: {e}\n"
+                )
+                continue
+            if args.cached and blob:
+                try:
+                    set_preload(root, args.mode, blob)
+                except Exception as e:  # noqa: BLE001
+                    sys.stderr.write(
+                        f"snapctx: preload cache write failed for {root}: "
+                        f"{type(e).__name__}: {e}\n"
+                    )
+        if not blob:
+            continue
+        if multi:
+            parts.append(f"=== {root_label(root, anchor)} ===\n{blob}")
+        else:
+            parts.append(blob)
+
+    if not parts:
+        return 1
+    sys.stdout.write("\n\n".join(parts))
+    if not parts[-1].endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
 
 
 def _resolve_query_scope(roots: list[Path], args: argparse.Namespace) -> None:
