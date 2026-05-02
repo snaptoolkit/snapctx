@@ -17,12 +17,21 @@ Each stage's count flows into the summary returned to the CLI. Only
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import Callable
 
 from snapctx.index import Index, db_path_for
 
+_log = logging.getLogger(__name__)
 
-def index_root(root: str | Path, *, force: bool = False) -> dict:
+
+def index_root(
+    root: str | Path,
+    *,
+    force: bool = False,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> dict:
     """Index (or re-index) every supported source file under ``root``.
 
     Reads ``<root>/snapctx.toml`` if present to override the walker's
@@ -34,6 +43,14 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
     from scratch — needed after a parser upgrade (new file types, new
     symbol kinds) so previously-indexed files get re-parsed even when
     their bytes haven't changed.
+
+    ``progress_callback`` (keyword-only) is invoked once per file
+    processed inside the main loop — for every updated, skipped, OR
+    removed file — with ``(current, total, path)`` where ``current`` is
+    1-indexed and ``total`` is fixed for the whole pass
+    (``len(walker_files) + len(stale_files)``). Exceptions raised by
+    the callback are swallowed (logged at ``DEBUG``) so a misbehaving
+    UI can't abort indexing.
 
     Returns a summary dict with counts.
     """
@@ -76,9 +93,29 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
         # away. Without this, stale symbols and call edges accumulate.
         walker_files = {str(f.resolve()) for f in iter_source_files(root_path, cfg.walker)}
         db_files = {row["path"] for row in idx.conn.execute("SELECT path FROM files").fetchall()}
-        for stale in db_files - walker_files:
+        stale_files = db_files - walker_files
+        # Stable per-pass denominator: every file the loop will touch
+        # exactly once (removals + walker hits). Computed up front so the
+        # UI can render a fixed-width bar.
+        total = len(walker_files) + len(stale_files)
+        current = 0
+
+        def _report(path: str) -> None:
+            """Forward (current, total, path) to ``progress_callback`` if
+            one was supplied. Swallow + log any exception so a buggy
+            consumer can't break the index pass."""
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(current, total, path)
+            except Exception:
+                _log.debug("progress_callback raised; ignoring", exc_info=True)
+
+        for stale in stale_files:
             idx.forget_file(stale)
             counts["removed"] += 1
+            current += 1
+            _report(stale)
 
         for file_str in walker_files:
             file = Path(file_str)
@@ -87,6 +124,8 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
             sha = sha_bytes(data)
             if idx.current_sha(file_str) == sha:
                 counts["skipped"] += 1
+                current += 1
+                _report(file_str)
                 continue
             parser = parser_for_path(file)
             assert parser is not None   # walker already filtered
@@ -94,6 +133,8 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
             idx.ingest(file_str, parser.language, sha, result)
             counts["updated"] += 1
             counts["symbols"] += len(result.symbols)
+            current += 1
+            _report(file_str)
 
         # Post-pass A — demote unresolved optimistic callees first, so
         # promote_self_calls (B) and promote_imported_calls (C) see a
