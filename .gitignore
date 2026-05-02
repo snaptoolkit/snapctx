@@ -18,3 +18,5 @@ opencode/nostream/node_modules/
 .vscode/
 .fleet/
 .zed/
+.codebeaver/
+sessions/

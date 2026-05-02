@@ -273,6 +273,7 @@ CLI exposes `edit` and `insert`; the rest are Python-API-only and called via `fr
 ```python
 from snapctx.api import rename_symbol
 result = rename_symbol("pkg.core:calculate_total", "compute_total", root=".")
+
 # {old_qname, new_qname, edits_applied, imports_updated, edits_skipped, files_touched}
 ```
 

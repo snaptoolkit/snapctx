@@ -223,6 +223,7 @@ def _maybe_audit_find(
     }
 
 
+
 def _context_hint(audit_block: dict | None, trimmed: str | None = None) -> str:
     base = (
         "This response bundles search + callees + callers + top sources + a file outline. "
