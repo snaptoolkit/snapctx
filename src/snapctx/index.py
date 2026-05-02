@@ -481,6 +481,133 @@ class Index:
             )
             return cur.rowcount
 
+    def promote_imported_calls(self) -> int:
+        """Resolve bare-name calls against the caller's imports + symbols.
+
+        Bridges the gap where the parser records ``callee_name='foo'`` but
+        leaves ``callee_qname=NULL`` because resolution would have required
+        following the import graph. Common in two patterns:
+
+        1. Source-tree prefix mismatch: file imports
+           ``from snapctx.api._preload import current_source_version`` —
+           runtime module ``snapctx.api._preload`` vs symbol qname
+           ``src.snapctx.api._preload:current_source_version``.
+
+        2. Re-exports: file imports
+           ``from snapctx.api import current_source_version`` — the
+           symbol's qname is buried in a deeper module, surfaced by
+           ``api/__init__.py``.
+
+        For each unresolved bare-name call (no dots, no
+        ``self.``/``this.``/``super.``/``cls.`` prefix), we:
+          (a) look up imports for the caller's file matching ``callee_name``;
+          (b) collect symbol qnames whose member half is exactly
+              ``callee_name``;
+          (c) keep only candidates whose module half is *compatible* with
+              the imported module — equal, equal after stripping a leading
+              ``src.``/``tests.``, or starts with the imported module + ``.``
+              (covers re-export chains);
+          (d) if **exactly one** candidate is compatible, resolve. Multiple
+              compatible candidates → ambiguous, skip. Single false hit
+              prevented.
+
+        Returns the number of rows updated.
+        """
+        # (1) Build per-file (lookup-name) → (real-name, module).
+        # ``lookup`` is what the call site uses (alias if aliased, else name).
+        # ``real_name`` is what the symbol is actually called in its
+        # defining module — that's the symbol-table key we want to match
+        # against, not the alias.
+        import_rows = self.conn.execute(
+            "SELECT file, name, alias, module FROM imports"
+        ).fetchall()
+        imports_by_file: dict[str, dict[str, tuple[str, str]]] = {}
+        for r in import_rows:
+            lookup = r["alias"] if r["alias"] else r["name"]
+            imports_by_file.setdefault(r["file"], {})[lookup] = (
+                r["name"], r["module"],
+            )
+
+        # (2) Build last-segment → [qname] index for callable symbols.
+        sym_rows = self.conn.execute(
+            "SELECT qname FROM symbols "
+            "WHERE kind IN ('function', 'method', 'class')"
+        ).fetchall()
+        by_last_segment: dict[str, list[str]] = {}
+        for r in sym_rows:
+            q = r["qname"]
+            if ":" not in q:
+                continue
+            member = q.rsplit(":", 1)[1]
+            if not member:
+                continue
+            last = member.rsplit(".", 1)[-1]
+            by_last_segment.setdefault(last, []).append(q)
+
+        # (3) Pull unresolved bare-name calls.
+        pending = self.conn.execute(
+            "SELECT rowid, file, callee_name FROM calls "
+            "WHERE callee_qname IS NULL "
+            "  AND callee_name NOT LIKE '%.%' "
+            "  AND callee_name NOT LIKE 'self.%' "
+            "  AND callee_name NOT LIKE 'this.%' "
+            "  AND callee_name NOT LIKE 'super.%' "
+            "  AND callee_name NOT LIKE 'cls.%'"
+        ).fetchall()
+
+        _SOURCE_PREFIXES = ("src.", "tests.")
+        updates: list[tuple[str, int]] = []
+        for row in pending:
+            callee = row["callee_name"]
+            file = row["file"]
+            import_hit = imports_by_file.get(file, {}).get(callee)
+            if import_hit is None:
+                # Caller didn't import this name — could be a builtin or
+                # local global. Don't guess.
+                continue
+            real_name, target_module = import_hit
+            candidates = by_last_segment.get(real_name, [])
+            if not candidates:
+                continue
+
+            compatible: list[str] = []
+            for q in candidates:
+                mod_half, _, member = q.rpartition(":")
+                if member != real_name:
+                    # Inherited methods (e.g. Class.foo where foo ==
+                    # real_name) have member == "Class.foo" — skip; we
+                    # only resolve to top-level functions / classes.
+                    continue
+                # Strip a leading source-tree prefix if present so the
+                # comparison is against the runtime module.
+                stripped = mod_half
+                for prefix in _SOURCE_PREFIXES:
+                    if stripped.startswith(prefix):
+                        stripped = stripped[len(prefix):]
+                        break
+                if stripped == target_module:
+                    compatible.append(q)
+                elif stripped.startswith(target_module + "."):
+                    # Re-export: target='snapctx.api', stripped=
+                    # 'snapctx.api._preload' (the deeper module that
+                    # actually defines the symbol).
+                    compatible.append(q)
+
+            if len(compatible) == 1:
+                updates.append((compatible[0], row["rowid"]))
+
+        if not updates:
+            return 0
+        n = 0
+        with self.tx():
+            for guess, rowid in updates:
+                self.conn.execute(
+                    "UPDATE calls SET callee_qname = ? WHERE rowid = ?",
+                    (guess, rowid),
+                )
+                n += 1
+        return n
+
     # ---------- transaction helper ----------
 
     @contextmanager

@@ -96,10 +96,11 @@ def index_root(root: str | Path, *, force: bool = False) -> dict:
             counts["symbols"] += len(result.symbols)
 
         # Post-pass A — demote unresolved optimistic callees first, so
-        # promote_self_calls (B) sees a clean slate of None callee_qnames
-        # to fill in. Order matters.
+        # promote_self_calls (B) and promote_imported_calls (C) see a
+        # clean slate of None callee_qnames to fill in. Order matters.
         demoted = idx.demote_unresolved_calls()
         idx.promote_self_calls()
+        idx.promote_imported_calls()
         embedded = _embed_missing(idx)
         idx.stamp_parser_version()
     finally:
@@ -197,6 +198,7 @@ def index_vendor_package(
 
         demoted = idx.demote_unresolved_calls()
         idx.promote_self_calls()
+        idx.promote_imported_calls()
         embedded = _embed_missing(idx)
         idx.stamp_parser_version()
     finally:
