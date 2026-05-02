@@ -383,14 +383,21 @@ def search_hint(
     query: str = "",
     with_bodies: bool = False,
     also_used: bool = False,
+    kind_filter: str | None = None,
 ) -> str:
     """One-line hint nudging the agent toward the next-best operation.
 
-    The ranker emits these as part of every search response. Beyond the
-    classic "next_action on the top hit" cue, we also nudge toward the
-    audit-class flags (``--with-bodies``, ``--also``) when the query
-    phrasing looks like an audit and those flags weren't used. Saves
-    the agent from having to remember the full toolset.
+    The ranker emits these as part of every search response. Three kinds
+    of nudges, in priority order:
+
+    * **Audit hint** — when the query phrasing looks like an audit and
+      ``--with-bodies`` / ``--also`` aren't in play, suggest them.
+    * **Mixed-kind hint** — when the user didn't pass ``--kind`` and the
+      top results span multiple kinds, suggest narrowing. Saves
+      grep-style trial-and-error on broad queries like "view" or "verse".
+    * **Next-action hint** — based on the top result's ``next_action``
+      (expand for callable, outline for class/module, source for short
+      symbols).
     """
     if not results:
         return (
@@ -406,6 +413,19 @@ def search_hint(
             "(no follow-up `source` needed)."
             + (" Use --also TERM to batch additional keywords." if not also_used else "")
         )
+
+    # Mixed-kind nudge: no explicit --kind filter AND top-3 hits span
+    # 3+ different kinds. The cheapest follow-up is a re-search with
+    # the right kind filter, not a body-pull on every hit.
+    if not kind_filter:
+        top_kinds = {r.get("kind") for r in results[:3] if r.get("kind")}
+        if len(top_kinds) >= 3:
+            kinds_str = ", ".join(sorted(k for k in top_kinds if k))
+            return (
+                f"Top results span {len(top_kinds)} kinds ({kinds_str}). "
+                f"Re-run with --kind <one> to narrow — saves a few rounds "
+                f"of trial-and-error on broad queries."
+            )
 
     top = results[0]
     qname = top["qname"]

@@ -159,6 +159,7 @@ def search_code(
     else:
         hint = search_hint(
             results, query=query, with_bodies=with_bodies, also_used=bool(also),
+            kind_filter=kind,
         )
 
     response: dict = {

@@ -144,6 +144,7 @@ def search_code_multi(
         "results": top,
         "hint": search_hint(
             top, query=query, with_bodies=with_bodies, also_used=bool(also),
+            kind_filter=kind,
         ),
     }
     if errors:
