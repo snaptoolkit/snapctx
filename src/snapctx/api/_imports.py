@@ -233,6 +233,15 @@ def add_import(
             }
 
         block_lines = _import_block_lines(idx, str(path))
+        # Filter out function-local / nested imports — the imports
+        # table records every import statement regardless of scope,
+        # but a NEW top-level import line must splice after the last
+        # MODULE-level import or it lands inside an indented block and
+        # corrupts the file. Issue #25.
+        block_lines = [
+            bl for bl in block_lines
+            if 1 <= bl <= len(lines) and not lines[bl - 1][:1].isspace()
+        ]
         if block_lines:
             # The imports table records each statement's START line.
             # For a multi-line import (TS ``import {\n a,\n b\n}

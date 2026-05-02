@@ -373,3 +373,36 @@ def test_add_import_after_multiline_typescript_import_block(tmp_path: Path) -> N
     pos_new = text.index('import { newThing } from "./newPlace"')
     pos_fn = text.index("export function run()")
     assert pos_types_close < pos_new < pos_fn
+
+
+def test_add_import_skips_function_local_imports(tmp_path: Path) -> None:
+    """Regression for issue #25: function-local ``import`` statements
+    are recorded in the imports table alongside top-level ones. The
+    add-import splice point used to be ``max(line) + 0``, which lands
+    inside an indented function body and produces an unparseable file.
+    The new import must splice after the LAST top-level import."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "m.py").write_text(
+        '"""file with a function-local import."""'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "\n"
+        "def main() -> int:\n"
+        "    import argparse\n"
+        "\n"
+        "    return 0\n"
+    )
+    index_root(repo)
+
+    result = add_import("m.py", "import sys", root=repo)
+    assert "error" not in result, result
+    text = (repo / "m.py").read_text()
+    # The function-local import must remain intact and indented.
+    assert "    import argparse" in text
+    # And the new top-level import must NOT be indented.
+    assert "\nimport sys\n" in text
+    # File must still parse.
+    import ast
+    ast.parse(text)
