@@ -255,6 +255,27 @@ def rrf_merge(
         for q in list(scores):
             if _simple_name(q) == name_match_token:
                 scores[q] += bonus
+    qname_tokens = _query_symbol_tokens(query)
+    if qname_tokens:
+        # Multi-token code-ish queries often contain exact symbol fragments
+        # ("default navigator model", "theme context", "book cache") but
+        # are classified as mixed/natural, so vector results can drown out
+        # the precise lexical hits. Boost qnames whose identifier segments
+        # overlap several query tokens; this is deterministic and only
+        # applies to symbols already retrieved by lexical/vector overfetch.
+        base = max(lex_weight, vec_weight) / (k_fuse + 1)
+        for q in list(scores):
+            overlap = qname_tokens & _qname_symbol_tokens(q)
+            if not overlap:
+                continue
+            # Two or more exact identifier fragments are a strong signal.
+            # Single-token overlap is intentionally small to avoid promoting
+            # every symbol containing generic words like "model" or "view".
+            factor = min(3, len(overlap))
+            if factor == 1:
+                scores[q] += base * 0.35
+            else:
+                scores[q] += base * factor
     has_code_seed = any(
         _row_language(row) not in DOC_LANGUAGES for row in kept.values()
     )
@@ -367,6 +388,59 @@ def _simple_name(qname: str) -> str:
     the name-match bonus so dotted method qnames still match a bare query."""
     tail = qname.split(":", 1)[-1]
     return tail.rsplit(".", 1)[-1].lower()
+
+
+_SYMBOL_TOKEN_SPLIT_RE = re.compile(
+    r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+"
+)
+
+_QNAME_TOKEN_STOPWORDS = frozenset({
+    "src", "lib", "app", "apps", "test", "tests", "components",
+    "component", "utils", "util", "helpers", "helper", "index",
+    "main", "core", "common",
+})
+
+
+def _split_symbol_token(token: str) -> list[str]:
+    parts: list[str] = []
+    for chunk in re.split(r"[^A-Za-z0-9]+", token):
+        if not chunk:
+            continue
+        parts.extend(m.group(0).lower() for m in _SYMBOL_TOKEN_SPLIT_RE.finditer(chunk))
+    return parts
+
+
+def _singularize_token(token: str) -> str:
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 3 and token.endswith("s"):
+        return token[:-1]
+    return token
+
+
+def _query_symbol_tokens(query: str | None) -> set[str]:
+    if not query:
+        return set()
+    out: set[str] = set()
+    for raw in query.split():
+        for token in _split_symbol_token(raw):
+            token = _singularize_token(token)
+            if len(token) < 3:
+                continue
+            if token in _NL_STOPWORDS or token in _QNAME_TOKEN_STOPWORDS:
+                continue
+            out.add(token)
+    return out
+
+
+def _qname_symbol_tokens(qname: str) -> set[str]:
+    out: set[str] = set()
+    for token in _split_symbol_token(qname):
+        token = _singularize_token(token)
+        if len(token) < 3 or token in _QNAME_TOKEN_STOPWORDS:
+            continue
+        out.add(token)
+    return out
 
 
 def looks_like_test(qname: str, file: str) -> bool:

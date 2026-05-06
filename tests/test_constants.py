@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from snapctx.api import get_source, index_root
 from snapctx.parsers.python import PythonParser
 
 
@@ -81,3 +82,39 @@ def test_underscore_prefixed_upper_constant_indexed(tmp_path: Path) -> None:
     result = PythonParser().parse(tmp_path / "m.py", tmp_path)
     qnames = {s.qname for s in result.symbols if s.kind == "constant"}
     assert "m:_REGISTRY" in qnames
+
+
+def test_get_source_refreshes_stale_constant_coordinates(tmp_path: Path) -> None:
+    repo = tmp_path
+    path = repo / "cfg.py"
+    path.write_text(
+        "PREVIOUS = ModelConfig(\n"
+        "    model='old',\n"
+        ")\n"
+        "\n"
+        "DEFAULT_MODEL = ModelConfig(\n"
+        "    model='spark',\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    index_root(repo)
+
+    path.write_text(
+        "PREVIOUS = ModelConfig(\n"
+        "    model='old',\n"
+        "    api_key='',\n"
+        ")\n"
+        "\n"
+        "# shifted after initial indexing\n"
+        "DEFAULT_MODEL = ModelConfig(\n"
+        "    model='spark',\n"
+        "    api_key='oauth',\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    out = get_source("cfg:DEFAULT_MODEL", root=repo)
+    assert out["lines"] == "7-10"
+    assert out["source"].startswith("DEFAULT_MODEL = ModelConfig(")
+    assert "model='spark'" in out["source"]
+    assert "PREVIOUS" not in out["source"]

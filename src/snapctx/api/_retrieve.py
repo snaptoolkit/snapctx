@@ -14,9 +14,11 @@ from pathlib import Path
 from snapctx.api._common import (
     docstring_summary,
     open_index,
+    refresh_file_in_index,
     resolve_qname,
     row_to_symbol_dict,
 )
+from snapctx.index import sha_bytes
 
 
 def outline(
@@ -265,10 +267,33 @@ def get_source(
 
         path = Path(row["file"])
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            data = path.read_bytes()
         except OSError as e:
             return {"qname": qname, "error": f"read_failed: {e}"}
 
+        if idx.current_sha(str(path)) != sha_bytes(data):
+            if not refresh_file_in_index(idx, path, root_path):
+                return {
+                    "qname": canonical,
+                    "error": "stale_coordinates",
+                    "hint": (
+                        f"File {str(path)!r} changed and could not be re-parsed."
+                    ),
+                }
+            canonical2, _ = resolve_qname(idx, canonical)
+            if canonical2 is None:
+                return {
+                    "qname": canonical,
+                    "error": "not_found",
+                    "hint": (
+                        f"Symbol {canonical!r} no longer exists in {path.name!r} "
+                        "after the external file change. Re-query for the new qname."
+                    ),
+                }
+            row = idx.get_symbol(canonical2)
+            canonical = canonical2
+
+        lines = data.decode("utf-8", errors="replace").splitlines()
         body = "\n".join(lines[row["line_start"] - 1 : row["line_end"]])
 
         result = {

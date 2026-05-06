@@ -252,6 +252,34 @@ def test_rrf_name_match_bonus_promotes_canonical_def() -> None:
     assert merged[0][0]["qname"] == "flask.helpers:url_for"
 
 
+def test_rrf_multi_token_qname_overlap_promotes_identifier_hits() -> None:
+    """Mixed natural/code queries should not bury exact qname-token hits.
+
+    This surfaced in navigator trials: "default navigator model spark"
+    had the right constants at the top lexically, but vector-only semantic
+    results about model providers outranked them in hybrid mode.
+    """
+    from snapctx.api._ranking import rrf_merge
+
+    def row(qname: str) -> dict:
+        return {"qname": qname, "file": "/repo/src/x.py", "language": "python"}
+
+    lex = [
+        (row("app.model_config:DEFAULT_QUICK_ANSWER_MODEL"), -8.0),
+        (row("app.model_config:quick_answer_config_from_env"), -7.0),
+        (row("app.providers:list_models"), -2.0),
+    ]
+    vec = [
+        (row("app.providers:list_models"), 0.92),
+        (row("app.cursor_bridge:default_models"), 0.89),
+        (row("app.model_config:DEFAULT_QUICK_ANSWER_MODEL"), 0.58),
+    ]
+    merged = rrf_merge(
+        lex, vec, limit=3, query="default navigator model spark quick answer",
+    )
+    assert merged[0][0]["qname"] == "app.model_config:DEFAULT_QUICK_ANSWER_MODEL"
+
+
 def test_rrf_no_query_no_bonus() -> None:
     """Backwards compatibility: callers that don't pass ``query`` get the
     plain RRF (only test penalty)."""
