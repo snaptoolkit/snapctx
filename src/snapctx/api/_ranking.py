@@ -245,6 +245,9 @@ def rrf_merge(
             q = row["qname"]
             scores[q] = scores.get(q, 0.0) + weight / (k_fuse + rank)
             kept[q] = row
+    has_code_seed = any(
+        _row_language(row) not in DOC_LANGUAGES for row in kept.values()
+    )
     if name_match_token is not None:
         # Scale the bonus to the larger of the two weights so an identifier
         # query (lex_weight 1.5, vec_weight 0.8) gets a meaningful bump even
@@ -265,6 +268,12 @@ def rrf_merge(
         # applies to symbols already retrieved by lexical/vector overfetch.
         base = max(lex_weight, vec_weight) / (k_fuse + 1)
         for q in list(scores):
+            if (
+                docs_demotion_active
+                and has_code_seed
+                and _row_language(kept[q]) in DOC_LANGUAGES
+            ):
+                continue
             overlap = qname_tokens & _qname_symbol_tokens(q)
             if not overlap:
                 continue
@@ -276,9 +285,6 @@ def rrf_merge(
                 scores[q] += base * 0.35
             else:
                 scores[q] += base * factor
-    has_code_seed = any(
-        _row_language(row) not in DOC_LANGUAGES for row in kept.values()
-    )
     for q, row in kept.items():
         if looks_like_test(q, row["file"]):
             scores[q] *= test_penalty

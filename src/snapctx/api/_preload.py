@@ -17,10 +17,11 @@ the blob alongside the index is the natural shape:
   read primitive can never serve a map that disagrees with the
   current source tree.
 
-The "version" we stamp each row with is just a SHA-1 over the
-``(path, sha)`` tuples in the ``files`` table, sorted. It costs one
-SQL query and a hash — no extra I/O — and is bit-identical across
-processes, so two TUIs talking to the same repo agree on hits/misses.
+The "version" we stamp each row with is a SHA-1 over the current
+filesystem's ``(path, sha)`` tuples, sorted. This deliberately reads
+the source tree instead of trusting the existing ``files`` table:
+external edits/deletes/additions must invalidate cached context before
+the caller has a chance to re-run ``index_root``.
 
 This module owns three public APIs and one internal helper:
 
@@ -37,38 +38,47 @@ import time
 from pathlib import Path
 
 from snapctx.api._common import open_index
+from snapctx.config import load_config
+from snapctx.index import sha_bytes
+from snapctx.walker import iter_source_files
 
 
 def current_source_version(root: Path) -> str:
-    """Return a stable hash of every ``(path, sha)`` row in the index.
+    """Return a stable hash of the current source files under ``root``.
 
     The hash is SHA-1 over a sorted, newline-separated rendering of
-    each ``files`` row — same input bytes always produce the same
-    digest, so two processes opening the same index agree on the
-    version. Cheap: one indexed scan of the ``files`` table, no
-    filesystem I/O (the SHAs already live in the index).
+    each source file path plus the SHA of its bytes. Reading the
+    filesystem is intentional: this function is the staleness sentinel
+    used by callers before they re-index, so it must notice external
+    edits, additions, deletions, and newly gitignored files that the
+    existing index table has not seen yet.
 
     Args:
         root: Repo root passed to ``index_root``. The function opens
             the corresponding ``.snapctx/index.db`` read-only.
 
     Returns:
-        Hex-encoded SHA-1 (40 chars). Stable for an unchanged index;
-        any change to the indexed files (add / remove / modify) flips
-        the digest.
+        Hex-encoded SHA-1 (40 chars). Stable for an unchanged source
+        tree; any add / remove / modify that affects indexed source
+        files flips the digest.
     """
-    idx = open_index(Path(root), scope=None)
-    try:
-        rows = idx.conn.execute(
-            "SELECT path, sha FROM files ORDER BY path"
-        ).fetchall()
-    finally:
-        idx.close()
+    root_path = Path(root).resolve()
+    cfg = load_config(root_path)
+    rows: list[tuple[str, str]] = []
+    for file in iter_source_files(root_path, cfg.walker):
+        path = file.resolve()
+        try:
+            sha = sha_bytes(path.read_bytes())
+        except OSError:
+            # The file can disappear between the walk and the read.
+            # Treat it as absent; the next call will see a stable view.
+            continue
+        rows.append((str(path), sha))
     h = hashlib.sha1()
-    for r in rows:
-        h.update(r["path"].encode("utf-8"))
+    for path, sha in sorted(rows):
+        h.update(path.encode("utf-8"))
         h.update(b"\0")
-        h.update(r["sha"].encode("utf-8"))
+        h.update(sha.encode("utf-8"))
         h.update(b"\n")
     return h.hexdigest()
 

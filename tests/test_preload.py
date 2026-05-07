@@ -98,6 +98,45 @@ def test_current_source_version_changes_after_edit(tmp_path: Path) -> None:
     assert before != after
 
 
+def test_current_source_version_changes_after_external_edit_without_reindex(
+    tmp_path: Path,
+) -> None:
+    repo = _build_repo(tmp_path)
+    before = current_source_version(repo)
+
+    (repo / "pkg" / "math.py").write_text(
+        '"""Math helpers."""\n'
+        "\n"
+        "\n"
+        "def add(a, b):\n"
+        "    return a + b + 0\n"
+    )
+
+    assert current_source_version(repo) != before
+
+
+def test_current_source_version_changes_after_external_delete_without_reindex(
+    tmp_path: Path,
+) -> None:
+    repo = _build_repo(tmp_path)
+    before = current_source_version(repo)
+
+    (repo / "pkg" / "math.py").unlink()
+
+    assert current_source_version(repo) != before
+
+
+def test_preload_misses_after_external_delete_without_reindex(
+    tmp_path: Path,
+) -> None:
+    repo = _build_repo(tmp_path)
+    set_preload(repo, "balanced", "PROJECT MAP")
+
+    (repo / "pkg" / "math.py").unlink()
+
+    assert get_preload(repo, "balanced") is None
+
+
 def test_invalidate_preloads_drops_every_mode(tmp_path: Path) -> None:
     repo = _build_repo(tmp_path)
     set_preload(repo, "fast", "F")
