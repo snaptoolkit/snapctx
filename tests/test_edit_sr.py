@@ -151,6 +151,63 @@ def test_batch_unknown_qname_doesnt_block_others(tmp_path: Path) -> None:
     assert any("pkg.more" in a["qname"] for a in result["applied"])
 
 
+def test_search_replace_tolerates_pre_existing_ts_grammar_gap(
+    tmp_path: Path,
+) -> None:
+    """Regression for #27: a TS file already triggering a tree-sitter
+    false-positive should still accept symbol-body edits.
+
+    Tree-sitter-typescript flags certain valid TS patterns (call
+    signatures with leading type parameters inside an object type) as
+    parse errors. Before the fix, the edit pre-flight ran on the new
+    file unconditionally and any file containing such a pattern would
+    refuse every SR edit because the same false-positive survived the
+    splice. Reproduces zustand's ``UseBoundStore`` shape minimally.
+    """
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "store.ts").write_text(
+        "type UseBoundStore<S> = {\n"
+        "  (): S\n"
+        "  <U>(selector: (state: S) => U): U\n"
+        "} & S\n"
+        "\n"
+        "export function useStore<S, U>(\n"
+        "  api: { getState: () => S },\n"
+        "  selector: (s: S) => U,\n"
+        ") {\n"
+        "  const slice = selector(api.getState())\n"
+        "  return slice\n"
+        "}\n"
+    )
+    index_root(repo)
+
+    # Pre-condition: tree-sitter does see the pre-existing error.
+    from snapctx.parsers.typescript import find_syntax_error
+    assert find_syntax_error(
+        (repo / "src" / "store.ts").read_text(), ".ts",
+    ) is not None
+
+    result = edit_symbol_search_replace(
+        "src/store:useStore",
+        "const slice = selector(api.getState())",
+        "  // injected\n  const slice = selector(api.getState())",
+        root=repo,
+    )
+    assert "error" not in result, result
+    assert "// injected" in (repo / "src" / "store.ts").read_text()
+
+    # Negative half: an edit that introduces a NEW syntax error must
+    # still be blocked even when the original had a false-positive.
+    result = edit_symbol_search_replace(
+        "src/store:useStore",
+        "return slice",
+        "return slice {{{",
+        root=repo,
+    )
+    assert result["error"] == "syntax_error"
+
+
 def test_batch_token_efficiency_vs_full_body(tmp_path: Path) -> None:
     """Sanity: search/replace payload << full-body payload for a small edit."""
     repo = _build_repo(tmp_path)

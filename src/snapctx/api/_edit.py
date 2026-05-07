@@ -151,8 +151,8 @@ def delete_symbol(
                     ),
                 }
         elif path.suffix in _TS_SUFFIXES:
-            from snapctx.parsers.typescript import find_syntax_error
-            err = find_syntax_error(new_text, path.suffix)
+            from snapctx.parsers.typescript import find_introduced_syntax_error
+            err = find_introduced_syntax_error(text, new_text, path.suffix)
             if err is not None:
                 line, col = err
                 return {
@@ -333,8 +333,8 @@ def edit_symbol(
                     ),
                 }
         elif path.suffix in _TS_SUFFIXES:
-            from snapctx.parsers.typescript import find_syntax_error
-            err = find_syntax_error(new_text, path.suffix)
+            from snapctx.parsers.typescript import find_introduced_syntax_error
+            err = find_introduced_syntax_error(text, new_text, path.suffix)
             if err is not None:
                 line, col = err
                 return {

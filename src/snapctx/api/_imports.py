@@ -118,8 +118,12 @@ def _post_docstring_insert_index(path: Path, lines: list[str]) -> int:
     return 0
 
 
-def _validate_syntax(path: Path, new_text: str) -> dict | None:
-    """Return an error dict if the candidate file won't parse, else None."""
+def _validate_syntax(path: Path, old_text: str, new_text: str) -> dict | None:
+    """Return an error dict if the candidate file won't parse, else None.
+
+    For TypeScript we compare against ``old_text`` so a pre-existing
+    tree-sitter false-positive (issue #27) doesn't gate every edit.
+    """
     if path.suffix in _PYTHON_SUFFIXES:
         try:
             ast.parse(new_text)
@@ -132,8 +136,8 @@ def _validate_syntax(path: Path, new_text: str) -> dict | None:
                 ),
             }
     elif path.suffix in _TS_SUFFIXES:
-        from snapctx.parsers.typescript import find_syntax_error
-        err = find_syntax_error(new_text, path.suffix)
+        from snapctx.parsers.typescript import find_introduced_syntax_error
+        err = find_introduced_syntax_error(old_text, new_text, path.suffix)
         if err is not None:
             line, col = err
             return {
@@ -147,8 +151,10 @@ def _validate_syntax(path: Path, new_text: str) -> dict | None:
     return None
 
 
-def _write_and_reindex(path: Path, new_text: str, root_path: Path) -> dict:
-    err = _validate_syntax(path, new_text)
+def _write_and_reindex(
+    path: Path, old_text: str, new_text: str, root_path: Path,
+) -> dict:
+    err = _validate_syntax(path, old_text, new_text)
     if err is not None:
         return err
     try:
@@ -265,7 +271,7 @@ def add_import(
     if had_trailing_nl:
         new_text += "\n"
 
-    write_result = _write_and_reindex(path, new_text, root_path)
+    write_result = _write_and_reindex(path, text, new_text, root_path)
     if "error" in write_result:
         return write_result
     return {
@@ -338,7 +344,7 @@ def remove_import(
     if had_trailing_nl:
         new_text += "\n"
 
-    write_result = _write_and_reindex(path, new_text, root_path)
+    write_result = _write_and_reindex(path, text, new_text, root_path)
     if "error" in write_result:
         return write_result
     return {

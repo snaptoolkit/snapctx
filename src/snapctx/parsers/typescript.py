@@ -41,25 +41,65 @@ def find_syntax_error(source: str, suffix: str) -> tuple[int, int] | None:
 
     Lines and columns are 1-based to match Python's ``ast.SyntaxError``.
     """
+    count, first = _count_and_first_error(source, suffix)
+    if count == 0:
+        return None
+    return first
+
+
+def find_introduced_syntax_error(
+    old_source: str, new_source: str, suffix: str,
+) -> tuple[int, int] | None:
+    """Return the position of an error introduced by the edit, else ``None``.
+
+    The plain ``find_syntax_error`` check is too strict for the edit
+    pre-flight: tree-sitter-typescript has known grammar gaps (e.g. a
+    call signature ``<U>(...): U`` inside an object type) that flag
+    perfectly valid TypeScript as a parse error. If the original file
+    was already in that state, refusing every edit because the same
+    pre-existing error survives the splice is wrong — issue #27 saw
+    SR edits against zustand bounce off this.
+
+    We compare error-node counts: only flag the edit when ``new_source``
+    has *more* errors than ``old_source``. Tree-sitter occasionally
+    cascades a single break into multiple error nodes, so a real
+    edit-introduced syntax error reliably bumps the count by ≥ 1.
+    Pre-existing errors are tolerated as long as the edit didn't make
+    things worse.
+    """
+    new_count, new_first = _count_and_first_error(new_source, suffix)
+    if new_count == 0:
+        return None
+    old_count, _ = _count_and_first_error(old_source, suffix)
+    if new_count <= old_count:
+        return None
+    return new_first
+
+
+def _count_and_first_error(
+    source: str, suffix: str,
+) -> tuple[int, tuple[int, int] | None]:
     lang = _TSX_LANG if suffix in _TSX_EXTENSIONS else _TS_LANG
     tree = Parser(lang).parse(source.encode("utf-8", errors="replace"))
     if not tree.root_node.has_error:
-        return None
-    # Walk to the first ERROR / MISSING node.
-    cursor = tree.walk()
-    while True:
-        node = cursor.node
+        return 0, None
+    count = 0
+    first: tuple[int, int] | None = None
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
         if node.is_error or node.is_missing:
-            row, col = node.start_point
-            return (row + 1, col + 1)
-        if cursor.goto_first_child():
-            continue
-        while not cursor.goto_next_sibling():
-            if not cursor.goto_parent():
-                # No descendant ERROR found despite has_error — treat
-                # as a generic root-level error.
-                row, col = tree.root_node.start_point
-                return (row + 1, col + 1)
+            count += 1
+            pos = (node.start_point[0] + 1, node.start_point[1] + 1)
+            if first is None or pos < first:
+                first = pos
+        stack.extend(reversed(node.children))
+    if count == 0:
+        # has_error was True but no descendant ERROR/MISSING found —
+        # treat as a generic root-level error.
+        row, col = tree.root_node.start_point
+        return 1, (row + 1, col + 1)
+    return count, first
 
 
 class TypeScriptParser:

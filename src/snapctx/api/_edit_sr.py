@@ -185,7 +185,7 @@ def edit_symbol_search_replace(
             new_text += "\n"
 
         # Same pre-flight as edit_symbol — refuse to write a broken file.
-        syn_err = _check_syntax(path, new_text)
+        syn_err = _check_syntax(path, text, new_text)
         if syn_err is not None:
             return {
                 "qname": canonical,
@@ -479,7 +479,7 @@ def _apply_search_replace_to_file(
     if had_trailing_nl:
         new_text += "\n"
 
-    syn_err = _check_syntax(path, new_text)
+    syn_err = _check_syntax(path, text, new_text)
     if syn_err is not None:
         return {
             "applied": [],
@@ -522,12 +522,17 @@ def _apply_search_replace_to_file(
     return {"applied": applied, "errors": []}
 
 
-def _check_syntax(path: Path, new_text: str) -> str | None:
+def _check_syntax(path: Path, old_text: str, new_text: str) -> str | None:
     """Run the same syntax pre-flight ``edit_symbol`` does.
 
     Returns ``None`` on a clean parse, or a short error description
     suitable for a ``hint`` string on failure. We share this between
     the single-edit and batch paths to keep error messages identical.
+
+    For TypeScript we compare against ``old_text`` so a pre-existing
+    tree-sitter false-positive (issue #27) doesn't gate every edit.
+    Python's ``ast.parse`` is reliable enough that we keep the strict
+    check there.
     """
     if path.suffix in _PYTHON_SUFFIXES:
         try:
@@ -536,8 +541,8 @@ def _check_syntax(path: Path, new_text: str) -> str | None:
             return f"{e.msg} at line {e.lineno}, col {e.offset}"
         return None
     if path.suffix in _TS_SUFFIXES:
-        from snapctx.parsers.typescript import find_syntax_error
-        err = find_syntax_error(new_text, path.suffix)
+        from snapctx.parsers.typescript import find_introduced_syntax_error
+        err = find_introduced_syntax_error(old_text, new_text, path.suffix)
         if err is not None:
             line, col = err
             return f"tree-sitter error at line {line}, col {col}"
