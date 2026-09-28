@@ -1,0 +1,104 @@
+{
+  "date": "2026-09-28",
+  "baseline_commit": "6fcc6c5",
+  "questions": 44,
+  "existing_questions": 38,
+  "additional_questions": 6,
+  "repeats": 3,
+  "baseline_queries": 264,
+  "candidate_queries": 396,
+  "warmup_excluded": true,
+  "indexing_excluded": true,
+  "jev_requests": 0,
+  "default_payloads_identical": 264,
+  "lost_reference_files": 0,
+  "projects": [
+    {
+      "label": "Project A",
+      "questions": 20,
+      "baseline_search": {
+        "median_ms": 45.753,
+        "mean_reference_recall": 0.6225,
+        "mean_bytes": 5837.6
+      },
+      "cached_search": {
+        "median_ms": 20.717,
+        "mean_reference_recall": 0.6225,
+        "mean_bytes": 5837.6
+      },
+      "baseline_context": {
+        "median_ms": 48.605,
+        "mean_reference_recall": 0.563333,
+        "mean_bytes": 14452.6
+      },
+      "cached_context": {
+        "median_ms": 22.067,
+        "mean_reference_recall": 0.563333,
+        "mean_bytes": 14452.6
+      },
+      "related_context": {
+        "median_ms": 27.559,
+        "mean_reference_recall": 0.6625,
+        "mean_bytes": 14952
+      }
+    },
+    {
+      "label": "Project B",
+      "questions": 12,
+      "baseline_search": {
+        "median_ms": 11.491,
+        "mean_reference_recall": 0.506944,
+        "mean_bytes": 5520.1
+      },
+      "cached_search": {
+        "median_ms": 7.907,
+        "mean_reference_recall": 0.506944,
+        "mean_bytes": 5520.1
+      },
+      "baseline_context": {
+        "median_ms": 15.484,
+        "mean_reference_recall": 0.395833,
+        "mean_bytes": 16476.3
+      },
+      "cached_context": {
+        "median_ms": 10.497,
+        "mean_reference_recall": 0.395833,
+        "mean_bytes": 16476.3
+      },
+      "related_context": {
+        "median_ms": 25.033,
+        "mean_reference_recall": 0.395833,
+        "mean_bytes": 16944.3
+      }
+    },
+    {
+      "label": "Project C",
+      "questions": 12,
+      "baseline_search": {
+        "median_ms": 42.737,
+        "mean_reference_recall": 0.763889,
+        "mean_bytes": 5723.2
+      },
+      "cached_search": {
+        "median_ms": 23.552,
+        "mean_reference_recall": 0.763889,
+        "mean_bytes": 5723.2
+      },
+      "baseline_context": {
+        "median_ms": 46.53,
+        "mean_reference_recall": 0.680556,
+        "mean_bytes": 15593.9
+      },
+      "cached_context": {
+        "median_ms": 25.326,
+        "mean_reference_recall": 0.680556,
+        "mean_bytes": 15593.9
+      },
+      "related_context": {
+        "median_ms": 41.653,
+        "mean_reference_recall": 0.75,
+        "mean_bytes": 16135.6
+      }
+    }
+  ]
+}

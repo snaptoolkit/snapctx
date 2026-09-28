@@ -20,7 +20,7 @@
 | Files accessed | 6 full reads | **4 ranked symbols** | targeted |
 | Query mode | sequential | **parallel** | concurrent fan-out |
 
-[See the controlled benchmark](#tool-benchmark) for per-query breakdowns.
+[See the controlled benchmark](#tool-benchmark) for per-query breakdowns. These figures describe that setup; the later [retrieval experiments](#retrieval-experiments) include contrasting agent results, skeleton approaches, and validation across three anonymized projects.
 
 Languages today: Python, TypeScript, TSX, JSX, shell (`.sh`/`.bash`), Markdown, TOML, YAML, JSON, and `.env` files. Code is parsed structurally (symbols, calls, imports); docs and configs index headings / top-level keys so an agent can find them without grep. The parser layer is pluggable — adding a language is a single new file.
 
@@ -157,6 +157,261 @@ Minimum-grep vs warm snapctx Python API (model pre-loaded, as with `snapctx watc
 | Multi-root discovery logic | architecture | 3 → 1 (**3× fewer**) | 16 ms → 5 ms (**3× faster**) | 4.2 k → 6.6 k (1.6× more) | grep reads two full files; snapctx includes call-graph depth and neighbors grep cannot produce |
 
 Audit and architecture queries return more tokens from snapctx, but the content is structured — every hit already carries its enclosing `qname`, call-graph neighbors, and file outline. The agent synthesises directly without further reads. These are minimum grep counts; real agents make more exploratory calls, widening the call-count gap to 16×.
+
+---
+
+## Retrieval experiments
+
+Study dates: 2026-09-26–2026-09-28.
+
+This study compared ordinary source search, Graphify, Snapctx's read interfaces, skeleton-guided exploration, and Jev ranking through OpenRouter. It then optimized a **standalone experimental retriever** combining Snapctx, live ripgrep, and one Jev request. The worker described below is an external prototype: these results do **not** mean it is shipped in Snapctx, registered as an MCP tool, or enabled in an agent's configuration.
+
+**Latest result:** 38 questions across three anonymized projects, run twice after stabilization. Reference-file coverage was **93.3–97.5%**, with **441–623 ms warm median latency**, approximately **9.7–10.0 kB returned per question**, and **$0.00037–$0.00038 Jev cost per question**. No previously retrieved reference file was lost in the final comparison. Six questions still required follow-up. These are retrieval measurements, not a new end-to-end agent accuracy or billing result.
+
+### Scope, scenarios, and measurement
+
+| Corpus | Indexed/scanned files | Questions | Scope |
+|---|---:|---:|---|
+| Project A | 2,045 | 18 | Backend, web frontend, CMS, mobile/web runtime, and deployment infrastructure |
+| Project B | 829 | 10 | Backend, dashboard, media processing, authentication, and infrastructure |
+| Project C | 13,688 | 10 | Backend, frontend, document processing, export/review workflows, infrastructure, and many documentation/output artifacts |
+
+Questions and reference files came from actual commits and direct source inspection. Application source was read only; indexes were built or refreshed separately. Representative questions included:
+
+- How does partial content availability affect frontend navigation and backend responses?
+- Which frontend caches must be bypassed for generated content, and which backend endpoint serves it?
+- How do cached mapping reads avoid an AI rate limit, and where is the batch route registered?
+- How does OAuth state travel through kickoff, callback, and completion?
+- Which runtime headers refresh callback entry assets while retaining ordinary static-asset caching?
+- Where do CMS evaluation filters, request types, and backend handlers connect?
+- How do EPUB headings, covers, anchors, and internal links get generated?
+- Which prompt templates, batch metadata, parser rules, and release files affect a processing workflow?
+- Where are a production feature gate, public sharing, invitation login, and protected exports implemented?
+- How are subtitle edit caches invalidated, organization budgets enforced, pending review changes stored, and interrupted jobs resumed?
+
+**Metrics:** reference-file recall@K is the mean, across questions, of the fraction of known implementation files present in the first K distinct returned paths. Reference sets are partial: an extra returned file may be relevant. Recall does not measure precision, snippet sufficiency, or correctness of a completed code change. The early agent study separately graded explanations against source.
+
+Returned bytes measure agent-visible context. Token proxies below are estimates, sometimes using four bytes/characters per token; **Codex billed tokens and total model cost were not measured**. Jev costs are separately reported OpenRouter charges. kB means approximately 1,000 bytes; KiB means 1,024 bytes. Costs, timings, and rounded output figures describe the observed runs. The ranking prototype used `typesafe/jev-1.13` through OpenRouter's `/api/alpha/decisions` endpoint; this records the experiment configuration, not a promise of future API availability.
+
+Native API queries used an existing index; some initial calls still paid embedding-model loading costs. Fresh-process wrapper timings include initialization. Warm JSONL medians exclude the first request per worker. Index building is excluded from query latency. Project A's original index build took 113 seconds including model download, extracting 22,266 symbols and creating 19,102 embeddings. Its native CLI freshness check made individual calls roughly 4–5 seconds in that workspace, unlike the already refreshed in-process API. Graph construction time was not measured. These measurements are separate from the earlier native-tool benchmarks above.
+
+### 1. Early Graphify/Jev exploration
+
+Three fresh agents first explored three cross-service questions with ordinary search, Graphify plus ripgrep, or Graphify plus ripgrep and Jev. This was exploratory: end-to-end timing and model tokens were not collected consistently.
+
+| Approach | Context queries | Additional searches/reads | Observed elapsed | Jev cost |
+|---|---:|---:|---|---:|
+| Ordinary search | 0 | About 31 | 3–5 min | $0 |
+| Graphify + ripgrep | 8 | About 35 | Not timed end to end | $0 |
+| Graphify + ripgrep + Jev, first draft | 3 successful, 1 network failure | About 11 | 2–3 min, excluding permission delay | $0.001295 |
+
+The three successful Jev queries took 6.555 seconds inside the tool, consuming 30,826 input and 1,926 output tokens. The first draft missed important files in two scenarios. Improvements retained short query terms, separated graph and text candidates, protected relevant repository representation, filtered unrelated generated/test/command paths, and selected implementation excerpts instead of imports. A fourth fresh agent used three revised queries (6.598 seconds total, $0.001287) plus 15 source reads/searches. Later excerpt fixes received direct-query and MCP protocol checks, but no further full agent run at that stage.
+
+Splitting a combined authentication question into two focused flows took about 2.2 seconds and $0.00042–$0.00045 per query and improved entry-point selection. Repository names or similar authentication terms alone were insufficient evidence that two implementations belonged to one active call chain. Jev could reorder candidates but could not recover files missing from its input pool.
+
+### 2. Three fresh Luna agents: same seven questions
+
+Three agents received the same seven questions, with no access to commit history, answer sets, or each other's output. A used ordinary shell tools; B used Graphify locally and attempted Jev; C used Snapctx locally and attempted Jev. Both assisted agents encountered provider/network errors in their initial sessions. A later Graphify follow-up succeeded after environment/network setup; the separate retrieval benchmark below successfully used Jev on all seven questions.
+
+| Agent workflow | Initial answer accuracy | Elapsed | Retrieved-context token proxy | Context reduction vs A | Historical score |
+|---|---:|---:|---:|---:|---:|
+| A: ordinary search | 7/7 = 100% | 52 s | ~6,250 | Baseline | 100/100 |
+| B: Graphify, local + Jev attempted | 5.25/7 = 75% | 65 s | ~39,120 | −526% (more output) | 67/100 |
+| C: Snapctx, local + Jev attempted | 3.5/7 = 50% | 107 s | ~52,000 | −732% (more output) | 44/100 |
+
+The historical score was `60 × accuracy + 25 × (52 / elapsed_seconds) + 15 × (6250 / context_proxy)`. Accuracy was based on completeness of the cited mechanism, with partial credit for missing parts. The context estimates came from mixed-quality agent reports and truncated tool outputs; they are not comparable billing records. Large result dumps and provider retries inflated assisted-agent context. Follow-up troubleshooting was excluded from initial accuracy.
+
+**The assisted agents did not save context or time in this run.** This is not a clean successful-Jev-versus-local ablation, and later retrieval improvements were not followed by another equivalent three-agent evaluation. Do not reuse these scores as scores for the stabilized worker.
+
+### 3. Native read interfaces and initial rankers
+
+Seven broad questions from Project A; native search/context through the Python API, external rankers through their wrappers. Latency and output are means. `--also` used two manually guided facets, so it had additional query information.
+
+| Method | Recall@8 | Latency | Returned output | Jev cost for 7 |
+|---|---:|---:|---:|---:|
+| Lexical search | 0.388 | 76 ms | 4.1 kB | $0 |
+| Vector search | 0.452 | 137 ms | 3.9 kB | $0 |
+| Hybrid search | 0.493 | 49 ms | 4.1 kB | $0 |
+| Hybrid with source bodies | 0.493 | 59 ms | 9.2 kB | $0 |
+| Hybrid with two guided `--also` facets | 0.624 | 112 ms | 5.9 kB | $0 |
+| Default `context` | 0.502 | 54 ms | 12.3 kB | $0 |
+| `context`, 3 seeds / 2 bodies / 4 outlines | 0.436 | 54 ms | 18.9 kB | $0 |
+| `context`, 8 seeds / 4 bodies / 12 outlines | 0.464 | 57 ms | 11.0 kB | $0 |
+| Vector `context` | 0.519 | 37 ms | 11.3 kB | $0 |
+| Graphify + local lexical ranking | 0.667 | 2,404 ms | 11.2 kB | $0 |
+| Initial Snapctx + live ripgrep + one Jev call | 0.824 | 2,033 ms | 7.1 kB | $0.00253 |
+| Focused skeleton + repeated Jev + source | 0.748 | 3,007 ms | 11.1 kB | $0.00350 |
+| Graphify + Jev | 0.860 | 2,991 ms | 11.1 kB | $0.00299 |
+
+A separate initial hybrid run averaged 46 ms at the same 0.493 recall. The focused-skeleton repeat reached 0.795 recall; borderline Jev rankings varied. Smaller seed/body settings did not ensure smaller total output because outlines and other response fields also contributed.
+
+Generated output, tests, migrations, and unrelated parser code crowded top results. Overfetching 100 hybrid hits and filtering generated/test paths raised recall to **0.605**, with approximately **3.5 kB** output and **70 ms median** latency. Adding guided facets to that filtered variant still yielded 0.605 in this run. Means were 193 ms and 142 ms respectively, including initial-load effects. Narrowing to `context` on just three selected symbols produced **0.436 recall**, 69 ms mean latency, and 16.6 kB output: relevant files were discarded too early. Source bodies and larger context packs did not fix discovery gaps.
+
+Exact names and structural operations answered narrower questions:
+
+| Interface | Observed timing and output | Finding |
+|---|---|---|
+| Scoped `find_literal` | ~15 ms; 1.9 kB | Exact target found in 7/7 examples |
+| Scoped `rg -F -l` | ~16 ms; 0.2 kB | Exact target found in 7/7 examples, including files without symbols |
+| Native `grep --in` | ~4.4 s; 1.1 kB | Raw text coverage with symbol annotations, but expensive here |
+| Exact-qname `source` | 0.7–1.3 ms; 1.6–2.7 kB | Efficient selected-source read |
+| `expand`, both directions, depth 2 | 0.9–1.5 ms; 0.2–5.3 kB | Efficient known-symbol relationship lookup |
+| File `outline` | 0.7–2.4 ms; 0.4–28 kB | Output depends heavily on file size and parsed symbols |
+| Scoped `map` | 5–18 ms; 9–49 kB | Useful subtree orientation; can still be large |
+| `routes` API | ~1 ms; 13 kB for 60 routes | Useful route inventory, with incomplete framework coverage |
+
+The initial `find_literal` harness used a relative scope against absolute indexed paths and returned no matches. Correcting the scope to an absolute path yielded the 7/7 exact-target result above. One literal still achieved only **0.531 full-workflow file recall**: finding an entry point does not complete a cross-file trace. Native `grep` can include `.env` files; explicitly scope raw text searches to the intended source area. Write interfaces were outside this retrieval study.
+
+### 4. Full skeleton, smaller skeleton, and incremental dives
+
+- **Full compact skeleton:** 3.88 million characters across 1,406 symbol-bearing files in Project A. A minimal rendering was estimated at 1.49 million characters. Truncation at 20,000 characters covered only about the first 104 files in directory order, not a balanced sample. Symbol-free runtime files were missing, requiring a live path inventory.
+- **Hierarchical Jev exploration:** repository area → directory → file → symbol → source, tested on three questions. It needed **17–21 Jev requests**, **6–8 seconds**, **65–75k Jev input tokens**, and **$0.0027–$0.0032 per question**. Adding missing paths recovered one runtime server, but another question followed the wrong processing area.
+- **Focused skeleton:** build the skeleton only for Snapctx/live-search candidates, then let Jev narrow files and symbols. It used **3–4 Jev requests per question**, about **3 seconds**, and **11.1 kB** returned output. More precise symbol selection did not beat the single-ranking approach on overall file coverage, latency, or cost.
+- **Fixed source enrichment:** append full source for the first three ranked symbols and one-hop neighbors while retaining 12 candidates. Five questions took **1.9–2.9 seconds** with **12–16 kB** output. File discovery did not improve, and the first three symbols were sometimes the wrong sources to prioritize.
+
+The useful incremental strategy was to retain compact candidates, inspect selected source, and follow exact imports, routes, constants, or callers. Preloading the whole skeleton and automatically attaching bodies consumed context without establishing better completeness.
+
+### 5. Broader scenarios and candidate-pool fixes
+
+The original seven questions grew to 13 development questions, followed by five held-out questions. On the 13-question set, mean recall@8 was 0.509 for hybrid search, 0.533 for default context, 0.512 for the original local combined pool, 0.726 for that pool plus Jev, 0.710 for focused dives, and 0.771 for Graphify plus Jev. Mean latencies were 116, 53, 1,552, 1,995, 3,183, and 2,876 ms respectively.
+
+Candidate generation had excluded relevant parser areas and missed hidden workflows, extensionless Dockerfiles, unparsed runtime code, and source HTML templates. The revised pool retained up to 20 initial symbol entries, limited symbols per file, filled remaining slots with live candidates, and capped the pool at 36. Two development runs of the revised ranker reached **0.899 and 0.890 recall@8**, with **1.921 and 1.977 second medians**, about **7.3 kB** output, and about **$0.00485 per 13 questions**.
+
+| Five-question holdout | Recall@8 |
+|---|---:|
+| Native hybrid | 0.667 |
+| Default context | 0.667 |
+| Original combined pool + Jev | 0.400 |
+| Revised combined pool + Jev | 0.933 |
+| Graphify + Jev | 0.300 |
+
+The revised holdout run averaged 1.98 seconds, 6.9 kB, and $0.00184 total. These five cases covered export covers, saved batch metadata, parsing names, OAuth errors, and language-specific prompt templates. Template support was subsequently adjusted after inspecting a remaining miss; later results on these same cases are regression measurements, not untouched holdout estimates.
+
+Across all 18 questions:
+
+| Method / prototype revision | Return budget | Mean recall | Median elapsed | Mean output | Jev cost for 18 |
+|---|---:|---:|---:|---:|---:|
+| Native hybrid | 8 paths | 0.553 | 54 ms | 3.9 KiB | $0 |
+| Native context | 8 seeds | 0.570 | 56 ms | 14.3 KiB | $0 |
+| Original Snapctx + live `rg` + Jev | 8 paths | 0.635 | 1,964 ms | 6.6 KiB | $0.00660 |
+| Graphify + Jev | 8 paths | 0.640 | 2,853 ms | 10.3 KiB | $0.00765 |
+| Revised local pool (v2) | 12 paths | 0.770 | 1,511 ms | 8.8 KiB | $0 |
+| Single-scan local pool (v4) | 12 paths | 0.770 | 678 ms | 8.8 KiB | $0 |
+| Revised pool + Jev (v2) | 10 paths | 0.945 | 1,971 ms | 8.9 KiB | $0.00668 |
+| Revised pool + Jev (v2) | 12 paths | 0.964 | 1,954 ms | 10.6 KiB | $0.00668 |
+| Single-scan pool + Jev (v4) | 12 paths | 0.964 | 1,112 ms | 10.5 KiB | $0.00669 |
+
+These revision labels identify experiment iterations, not Snapctx releases. Different return budgets are not equivalent comparisons. The first eight paths of the revised 12-path run achieved **0.883 recall**. Returning 12 paths fully covered **16/18 questions**, without another Jev request, at about 1.7 KiB more output than the separate 10-path run. Rank ordering can vary between API calls.
+
+Manual exact-name follow-ups recovered missing callers, throttle definitions, and route registrations in **8–29 ms**. These post hoc searches were not automated and are **not counted as 100% retrieval accuracy**.
+
+### 6. Latency optimization and stability
+
+The selected prototype retained a maximum of **36 candidates**, **650-character evidence excerpts**, **one Jev request**, and **12 distinct returned paths**. Optimization changed execution and serialization rather than adding another AI decision stage.
+
+| Experiment | Observation | Decision |
+|---|---|---|
+| Ten parallel ripgrep processes (v3) | Four-query local median 1,541 → 1,427 ms, about 7% faster | Superseded by one scan |
+| One multi-pattern ripgrep scan + local scoring (v4) | Same candidate sets over 18 questions, one ordering difference; local median 1,511 → 678 ms | Retained |
+| Concurrent local retrieval in fresh processes (v5) | Contemporary median 1,178 → 1,219 ms | Cold concurrency alone offered no gain |
+| Persistent JSONL worker | Initial warm median 684 ms at unchanged 0.964 recall | Retained model reuse |
+| Overlap Snapctx and live text retrieval | Two order-reversed rounds: local median 338 → 232 ms; 36/36 identical ordered candidate evidence after deterministic ties | Retained |
+| Reuse HTTP connection | 12 paired requests: median about 370 → 339 ms | Optional HTTPX pool; urllib fallback |
+| Compact JSON | Mean output 10,902 → 9,731 bytes, all fields retained | About 11% fewer bytes, not measured billed-token savings |
+
+Two subsequent 18-question runs reached **0.964 recall**, with **16/18 fully covered in each**, **645 ms combined warm median**, a **1,406 ms first request**, and approximately **$0.00037 per question**. Warm requests were about **45% faster** than the contemporary 1,178 ms fresh-process baseline. This comparison includes the benefit of keeping a process alive; it does not establish a 45% speedup for one isolated cold query.
+
+The worker caches the embedding model and HTTP connection, **not retrieval results or source content**. Index freshness remains a separate responsibility. Stabilization introduced deterministic ties, default 12-path output, bounded/validated requests and roots, finite API scores in the range 0–1, malformed-JSONL recovery, connection reset on network failure, live-edit/deletion handling, and symlink boundaries. Failed live search produces an explicit error. Jev failure returns local results marked `jev.used: false` with a reason; local fallback has lower measured recall. A CLI `--no-jev` setting cannot be overridden by a JSONL request. The initial 11 focused checks grew to 15 after portability fixes.
+
+### 7. Cross-project validation and fixes
+
+Project A retained its 18 questions. Projects B and C each added eight development and two held-out questions. The final version ran all **38 questions twice: 76 queries**. The baseline here was the preceding stabilized worker, not the original native search or first prototype.
+
+| Corpus | Questions | Previous recall@12 | Final recall@12 | Previous warm median | Final warm median | Fully covered |
+|---|---:|---:|---:|---:|---:|---:|
+| Project A | 18 | 96.4% | **96.4%** | 622 ms | **623 ms** | 16/18 |
+| Project B | 10 | 70.0% | **93.3%** | 455 ms | **441 ms** | 7/10 |
+| Project C | 10 | 84.2% | **97.5%** | 532 ms | **532 ms** | 9/10 |
+
+The eight-question development subsets improved from **0.625 to 0.917** in Project B and **0.802 to 0.969** in Project C. Fixes addressed:
+
+1. **Folder-name assumptions:** words such as “frontend” and “backend” had incorrectly restricted search to literally named folders. Search now honors the configured root without that inference.
+2. **Infrastructure omissions:** discovery now covers root/nested Dockerfiles and variants, hidden GitHub workflows, GitLab CI, nginx `.conf` files, and runtime entry files.
+3. **A regression caused by broader discovery:** runtime code competed with infrastructure config, and an unrelated deeper server displaced a needed runtime helper. Separate code/config slots and preservation of helpers referenced by relevant container images restored Project A's release scenario. Its temporary development recall drop from 0.964 to 0.950 was eliminated.
+4. **A hardcoded default root:** the default became the current directory, with explicit root/environment overrides.
+
+Both final runs had identical per-question reference coverage. Comparing actual retrieved reference-file sets found **zero lost files across all 76 final queries**. All queries successfully used Jev, returned valid paths within the configured root, and respected the 12-path cap. Mean returned bytes were **9,817 / 9,722 / 10,012** for A/B/C; mean Jev cost was approximately **$0.000373 / $0.000380 / $0.000381** respectively. **All 15 focused stability checks passed.**
+
+The four held-out portability questions—subtitle cache invalidation, organization budgets, pending review changes, and interrupted-job checkpoints—were fully covered before and after fixes in both repeats. This is a small holdout, not evidence of universal completeness.
+
+Cold starts were checked separately with three fresh-process queries per version per project, alternating version order:
+
+| Corpus | Previous cold median | Final cold median |
+|---|---:|---:|
+| Project A | 1,228 ms | 1,150 ms |
+| Project B | 819 ms | 844 ms |
+| Project C | 927 ms | 914 ms |
+
+One first Project A request in the main suite took 2.39 seconds; it did not recur in the cold checks, whose final samples ranged from 1,149 to 1,288 ms. Three samples per condition do not establish a latency guarantee.
+
+**Remaining gaps:** six questions missed a shared feature flag, public-share route registration, a login API facade, a shared authenticated API base, a parent navigation page, or throttle/URL definitions. Exact-name follow-up remains necessary; the final worker does not automatically provide complete context for every scenario.
+
+### Native improvements evaluated after the standalone experiments
+
+The native tool now reuses vector matrices within a process, and offers an optional import/route follow-up. This is separate from the external Snapctx + ripgrep + Jev worker described above. No Jev call or agent configuration change is needed for these native features.
+
+**Vector reuse is automatic.** A bounded process cache retains immutable matrices across API calls and checks SQLite commit versions through dedicated read-only observers. Writes from the same or another connection invalidate reuse; explicit transactions bypass it, and database replacement is detected. The cache retains at most three indexes and approximately 128 MiB of matrix/name data. It does not cache source text, query results, or embeddings for new queries. A fresh process still pays initialization and matrix-loading costs.
+
+**Dependency follow-up is opt-in:**
+
+```bash
+snapctx context "how is a download authorized and routed" --related-file-limit 4
+```
+
+```python
+from snapctx.api import context, related_files, related_files_multi
+
+pack = context("download authorization", root="/path/to/repo", related_file_limit=4)
+extra = related_files(["app.views:download"], root="/path/to/repo", limit=4)
+```
+
+The `related_files` response lists additional paths with evidence identifying the originating symbol, import or route-registration line, and referenced name. It follows one hop of Python imports (including selected function-local imports), relative JavaScript/TypeScript imports, and common local `tsconfig` alias mappings, including referenced configs. Unknown or ambiguous imports are skipped. Referenced source files must remain inside the root and match their indexed hashes; stale/deleted files and external symlinks do not produce new evidence. The supplement contains file pointers, not full source bodies or a guarantee that each dependency is relevant to the entire question. Read selected files afterward.
+
+The default limit is **0**, preserving existing context output. Allowed limits are 0–16. The supplement is added after core payload trimming so it cannot evict existing outlines; its output is additional to the core token budget. Multi-root context also accepts the limit and tags supporting files with their root. No recursive import expansion or guessed cross-service relationship is added.
+
+#### Native evaluation: 44 questions, three repetitions
+
+The existing 38 questions were supplemented with six additional source-verified scenarios covering session identity, multipart-upload cleanup, export quality checks, provider-client construction, shared pronunciation caches, and localized section boundaries. Each revision ran in a separate process against the same existing indexes. The baseline was commit `6fcc6c5`; warmup was excluded. There were **264 baseline calls** (search and context) and **396 candidate calls** (search, context, and optional follow-up).
+
+| Corpus | Questions | Native search median, before → after | Default context median, before → after | Default context coverage → with follow-up | Follow-up context median |
+|---|---:|---:|---:|---:|---:|
+| Project A | 20 | 45.8 → **20.7 ms** | 48.6 → **22.1 ms** | 56.3% → **66.3%** | 27.6 ms |
+| Project B | 12 | 11.5 → **7.9 ms** | 15.5 → **10.5 ms** | 39.6% → **39.6%** | 25.0 ms |
+| Project C | 12 | 42.7 → **23.6 ms** | 46.5 → **25.3 ms** | 68.1% → **75.0%** | 41.7 ms |
+
+All **264 default response hashes matched** their baseline counterparts after canonical JSON serialization: rankings, source context, coverage, and output size were unchanged. Warm search was **31–55% faster**, and default context was **32–55% faster**. These are in-process API timings, not cold CLI or end-to-end agent timings.
+
+Optional follow-up added an average **468–542 bytes** per question (about 2.8–3.5% more output), with no lost reference files. Across the original 38 questions, native context coverage rose from **53.6% to 57.5%**, and fully covered cases from **13 to 14**. Across the six additional questions, coverage rose from **63.9% to 86.1%**, and fully covered cases from **2 to 4**. The small additional set is exploratory. Project B showed no reference-coverage gain and paid extra latency, which is why follow-up is optional.
+
+This coverage measure examines distinct files throughout the context payload; it is **not recall@12** and should not be directly compared with the earlier external-worker table. Additional files are structurally supported, but precision and full answer correctness were not graded. Native default token savings are **zero** here: identical context is returned faster. These changes do not establish new Codex billing savings or a replacement for the stronger external discovery worker.
+
+Regression checks cover cache reuse, committed writes, deletion, empty indexes, transaction isolation, eviction, database replacement, concurrent readers, relative/configured imports, route evidence, ambiguity, stale files, symlink boundaries, output limits, multi-root routing, and preservation of core context at a token-budget boundary.
+
+**All 501 tests passed**, including both opt-in performance checks.
+
+A reusable [benchmark runner](benchmarks/native_retrieval.py) accepts an external scenario manifest; the [anonymized result summary](benchmarks/native-results-2026-09-28.json) records aggregate metrics. Run both revisions with the same Python environment, source snapshots, and refreshed indexes; add `--related` only for the new revision. Private manifests and source paths are intentionally not included.
+
+### Recommended retrieval workflow and limits
+
+1. **Known identifier, route, header, or literal:** start with scoped `find` or `rg -F -l`; read selected qnames with `source`, and use `expand` for callers/callees. This avoids a ranking API call.
+2. **Broad question:** the strongest measured prototype used a bounded hybrid/live candidate pool, one Jev rank, and 12 compact paths. Keep its JSONL process alive for repeated queries; maintain index freshness separately.
+3. **Incremental deepening:** inspect the selected implementation and follow exact imports, constants, routes, and callers locally. Use another model-ranking stage only when the missing component cannot be resolved that way.
+4. **Orientation:** scope `map` or `outline` to a relevant subtree/file. A full skeleton was too large and incomplete for routine preload in this study.
+5. **Alternative graph discovery:** Graphify remains an option when relevant areas are absent from the candidate pool. It won the initial seven-question comparison but lost to the revised retriever on the broader corpus; neither result proves a universal ranking.
+
+Jev ranking sends bounded candidate excerpts to OpenRouter. Local-only retrieval has no Jev charge and avoids that source transfer. Native Snapctx and the external Jev experiment have different network behavior.
+
+The measured gains are file coverage and retrieval latency. Output reduction is not an established overall token or dollar saving, and no new end-to-end agent score was measured after stabilization. The private corpora and raw traces are not distributed in this repository; the tables document observed results, while exact independent reproduction requires equivalent source snapshots, question/reference sets, tool versions, and provider settings. The experiment did not change application code or enable the standalone worker in Codex/MCP.
 
 ---
 
