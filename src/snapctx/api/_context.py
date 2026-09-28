@@ -35,6 +35,7 @@ from snapctx.api._find import find_literal
 from snapctx.api._graph import collect_neighbors
 from snapctx.api._ranking import extract_audit_literal
 from snapctx.api._search import search_code
+from snapctx.api._related import collect_related_files, _validate_limit
 
 
 def context(
@@ -51,6 +52,7 @@ def context(
     kind: str | None = None,
     root: str | Path = ".",
     scope: str | None = None,
+    related_file_limit: int = 0,
 ) -> dict:
     """Gather everything an agent needs about ``query`` in one call.
 
@@ -75,7 +77,12 @@ def context(
     candidates (15 by default). We return only the top ``k_seeds`` as seeds,
     but use the broader candidate pool to discover up to
     ``file_outline_limit`` unique files to outline.
+
+    ``related_file_limit`` optionally adds a bounded one-hop import/route
+    supplement with evidence locations. It defaults to zero; existing output
+    is preserved. This supplement is added after the core payload budget.
     """
+    _validate_limit(related_file_limit)
     root_path = Path(root).resolve()
     seeds, candidates, mode = _seeds_for_query(
         query, root_path, k_seeds, outline_discovery_k, kind, mode, scope=scope,
@@ -114,6 +121,7 @@ def context(
             for i, seed in enumerate(seeds)
         ]
         file_outlines = _file_outlines(idx, candidates, file_outline_limit)
+        related = collect_related_files(idx, seeds, root_path, query, related_file_limit)
     finally:
         resolver.close()
         idx.close()
@@ -132,6 +140,10 @@ def context(
 
     payload["token_estimate"] = rough_token_count(payload)
     _apply_payload_guard(payload, body_char_cap)
+    # Supplement after trimming so extra evidence cannot evict existing context.
+    if related_file_limit:
+        payload["related_files"] = related
+        payload["token_estimate"] = rough_token_count(payload)
     payload["hint"] = _context_hint(audit_block, payload.get("trimmed"))
     return payload
 

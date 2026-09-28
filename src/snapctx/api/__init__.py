@@ -16,6 +16,7 @@ Stable surface — anything imported here is expected to keep working:
 """
 
 from snapctx.api._context import context
+from snapctx.api._related import related_files
 from snapctx.api._edit import delete_symbol, edit_symbol
 from snapctx.api._edit_batch import edit_symbol_batch
 from snapctx.api._edit_sr import (
@@ -40,6 +41,7 @@ from snapctx.api._rename import rename_symbol
 from snapctx.api._routes import list_routes, lookup_route
 from snapctx.api._skeleton import session_skeleton
 from snapctx.api._multi import (
+    related_files_multi,
     add_import_multi,
     context_multi,
     delete_symbol_multi,
@@ -63,6 +65,8 @@ from snapctx.api._graph import is_builtin_noise as _is_builtin_noise  # noqa: F4
 from snapctx.api._ranking import classify_query as _classify_query  # noqa: F401
 
 __all__ = [
+    "related_files",
+    "related_files_multi",
     "add_import",
     "add_import_multi",
     "context",

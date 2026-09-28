@@ -124,7 +124,7 @@ _QUERY_COMMANDS: tuple[QueryCommand, ...] = (
     QueryCommand("context", context, context_multi,
                  arg_names=(
                      "query", "k_seeds", "source_for_top",
-                     "file_outline_limit", "outline_discovery_k",
+                     "file_outline_limit", "outline_discovery_k", "related_file_limit",
                      "mode", "kind",
                  )),
     QueryCommand("find", find_literal, find_literal_multi,
@@ -481,6 +481,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_context.add_argument("--mode", choices=["lexical", "vector", "hybrid"], default="hybrid")
     p_context.add_argument("--kind", default=None)
+    p_context.add_argument("--related-file-limit", type=int, choices=range(17), default=0,
+                           help="Additional import/route files (0 disables; default 0).")
     p_context.add_argument("--root", default=".")
     _add_vendor_args(p_context)
 

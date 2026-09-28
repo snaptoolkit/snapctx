@@ -165,12 +165,15 @@ def context_multi(
     outline_discovery_k: int = 15,
     mode: Literal["lexical", "vector", "hybrid"] = "hybrid",
     kind: str | None = None,
+    related_file_limit: int = 0,
     anchor: Path | None = None,
 ) -> dict:
     """Run ``context`` across multiple roots and merge into one pack."""
     from snapctx.api._common import rough_token_count
+    from snapctx.api._related import _validate_limit
     from snapctx.roots import root_label
 
+    _validate_limit(related_file_limit)
     if not roots:
         return {
             "query": query, "mode": mode, "seeds": [],
@@ -183,16 +186,19 @@ def context_multi(
             expand_depth=expand_depth, neighbor_limit=neighbor_limit,
             body_char_cap=body_char_cap, file_outline_limit=file_outline_limit,
             outline_discovery_k=outline_discovery_k, mode=mode, kind=kind, root=r,
+            related_file_limit=related_file_limit,
         ),
         roots, anchor=anchor,
     )
 
     seeds: list[dict] = []
     outlines: list[dict] = []
+    related: list[dict] = []
     for r, res in ok:
         label = root_label(r, anchor)
         seeds.extend(_tag_items(res.get("seeds", []), label))
         outlines.extend(_tag_items(res.get("file_outlines", []), label))
+        related.extend(_tag_items(res.get("related_files", []), label))
 
     # RRF scores are comparable across roots — same ranker, same fusion.
     seeds.sort(key=lambda s: -float(s.get("score", 0.0)))
@@ -207,6 +213,16 @@ def context_multi(
         "seeds": top_seeds,
         "file_outlines": outlines[:file_outline_limit],
     }
+    if related_file_limit:
+        origin_rank = {(s.get("root"), s["qname"]): i for i, s in enumerate(top_seeds)}
+        related.sort(key=lambda item: (
+            min((origin_rank.get((item.get("root"), e["from"]), len(top_seeds))
+                 for e in item["evidence"]), default=len(top_seeds)), item["file"],
+        ))
+        distinct = {}
+        for item in related:
+            distinct.setdefault(item["file"], item)
+        payload["related_files"] = list(distinct.values())[:related_file_limit]
     payload["token_estimate"] = rough_token_count(payload)
     payload["hint"] = (
         f"Multi-root context: results merged across {len(roots)} indexed sub-project(s). "
@@ -215,6 +231,29 @@ def context_multi(
     if errors:
         payload["root_errors"] = errors
     return payload
+
+
+def related_files_multi(
+    qnames: list[str], roots: list[Path], *, query: str = "", limit: int = 4,
+    anchor: Path | None = None,
+) -> dict:
+    """Follow selected symbols in each root, keeping a global file limit."""
+    from snapctx.api._related import related_files, _validate_limit
+    from snapctx.roots import root_label
+
+    _validate_limit(limit)
+    ok, errors = _fan_out(
+        lambda r: related_files(qnames, root=r, query=query, limit=limit),
+        roots, anchor=anchor,
+    )
+    distinct = {}
+    for root, response in ok:
+        for item in _tag_items(response["related_files"], root_label(root, anchor)):
+            distinct.setdefault(item["file"], item)
+    result = {"related_files": list(distinct.values())[:limit]}
+    if errors:
+        result["root_errors"] = errors
+    return result
 
 
 # ---------- route wrappers (expand / source / outline) ----------
