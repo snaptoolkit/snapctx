@@ -180,6 +180,8 @@ class Index:
         # work is sub-second on normal repos. See issue #10.
         self.conn.execute("PRAGMA busy_timeout=15000")
         self.conn.executescript(SCHEMA)
+        db_stat = self.db_path.stat()
+        self._db_identity = (db_stat.st_dev, db_stat.st_ino)
         # Compare the index's parser version against the running code.
         # ``user_version=0`` is the SQLite default — treated as "older
         # than 1" so freshly created indexes match the current code
@@ -439,12 +441,11 @@ class Index:
         """
         import numpy as np
 
-        rows = self.conn.execute("SELECT qname, vector FROM symbol_vectors").fetchall()
-        if not rows:
+        from snapctx._vector_cache import vector_snapshot
+
+        qnames, matrix = vector_snapshot(self.db_path, self.conn, self._db_identity)
+        if matrix is None:
             return []
-        qnames = [r["qname"] for r in rows]
-        blob = b"".join(r["vector"] for r in rows)
-        matrix = np.frombuffer(blob, dtype=np.float32).reshape(len(rows), -1)
         scores = matrix @ query_vec.astype(np.float32)
         order = np.argsort(-scores)
 
