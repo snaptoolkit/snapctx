@@ -1,0 +1,890 @@
+{
+  "study_date": "2026-09-28",
+  "privacy": "Anonymous aggregate metrics only; no private source, paths, queries, or answer artifacts.",
+  "native_revision": "d777dbea2b7cc3bcf5bf477e819a95d64cf396b6",
+  "native_baseline_revision": "6fcc6c5",
+  "metrics": {
+    "context_tokens": "UTF-8 emitted bytes / 4; not billed model tokens",
+    "agent_elapsed": "First measured invocation through answer persistence; setup and initial preparation excluded",
+    "accuracy": "Manual unblinded implementation/mechanism/integration/edge-case grading, 0/0.5/1 each; 28 maximum",
+    "score": "60*accuracy + 25*fastest_time/time + 15*smallest_context/context; relative within cohort",
+    "retrieval_recall": "Mean fraction of partial reference-file sets found; not exhaustive precision or answer correctness"
+  },
+  "native_baseline": [
+    {
+      "project": "Project B",
+      "mode": "search",
+      "median_ms": 12.109958508517593,
+      "recall": 0.5069444444444444,
+      "mean_bytes": 5520.416666666667
+    },
+    {
+      "project": "Project B",
+      "mode": "context",
+      "median_ms": 14.97443747939542,
+      "recall": 0.3958333333333333,
+      "mean_bytes": 16512.666666666668
+    },
+    {
+      "project": "Project C",
+      "mode": "search",
+      "median_ms": 45.58758402708918,
+      "recall": 0.7638888888888888,
+      "mean_bytes": 5734.583333333333
+    },
+    {
+      "project": "Project C",
+      "mode": "context",
+      "median_ms": 47.74545808322728,
+      "recall": 0.6805555555555556,
+      "mean_bytes": 15330.5
+    },
+    {
+      "project": "Project A",
+      "mode": "search",
+      "median_ms": 46.78527096984908,
+      "recall": 0.6225,
+      "mean_bytes": 5836.4
+    },
+    {
+      "project": "Project A",
+      "mode": "context",
+      "median_ms": 52.11275047622621,
+      "recall": 0.5633333333333334,
+      "mean_bytes": 14452.5
+    }
+  ],
+  "native_current": [
+    {
+      "project": "Project B",
+      "mode": "search",
+      "median_ms": 7.609083550050855,
+      "recall": 0.5069444444444444,
+      "mean_bytes": 5520.416666666667
+    },
+    {
+      "project": "Project B",
+      "mode": "context",
+      "median_ms": 10.398250014986843,
+      "recall": 0.3958333333333333,
+      "mean_bytes": 16512.666666666668
+    },
+    {
+      "project": "Project B",
+      "mode": "related",
+      "median_ms": 24.5829580235295,
+      "recall": 0.3958333333333333,
+      "mean_bytes": 16980.666666666668
+    },
+    {
+      "project": "Project C",
+      "mode": "search",
+      "median_ms": 22.65570854069665,
+      "recall": 0.7638888888888888,
+      "mean_bytes": 5734.583333333333
+    },
+    {
+      "project": "Project C",
+      "mode": "context",
+      "median_ms": 24.31366703240201,
+      "recall": 0.6805555555555556,
+      "mean_bytes": 15330.5
+    },
+    {
+      "project": "Project C",
+      "mode": "related",
+      "median_ms": 38.553625519853085,
+      "recall": 0.7777777777777778,
+      "mean_bytes": 15920.833333333334
+    },
+    {
+      "project": "Project A",
+      "mode": "search",
+      "median_ms": 20.219645521137863,
+      "recall": 0.6225,
+      "mean_bytes": 5836.4
+    },
+    {
+      "project": "Project A",
+      "mode": "context",
+      "median_ms": 22.45564601616934,
+      "recall": 0.5633333333333334,
+      "mean_bytes": 14452.5
+    },
+    {
+      "project": "Project A",
+      "mode": "related",
+      "median_ms": 27.02824998414144,
+      "recall": 0.6625,
+      "mean_bytes": 14951.85
+    }
+  ],
+  "native_equal": {
+    "calls": 264,
+    "payloads_identical": 264
+  },
+  "retrieval_44": [
+    {
+      "project": "Project B",
+      "mode": "local_12",
+      "n": 36,
+      "median_ms": 82.58685457985848,
+      "recall": 0.5972222222222222,
+      "full": 15,
+      "mean_bytes": 7883.833333333333
+    },
+    {
+      "project": "Project B",
+      "mode": "local_16",
+      "n": 36,
+      "median_ms": 82.58685457985848,
+      "recall": 0.8680555555555556,
+      "full": 24,
+      "mean_bytes": 10993.083333333334
+    },
+    {
+      "project": "Project B",
+      "mode": "local_12+related",
+      "n": 36,
+      "median_ms": 131.5486875246279,
+      "recall": 0.5972222222222222,
+      "full": 15,
+      "mean_bytes": 8551.833333333334
+    },
+    {
+      "project": "Project B",
+      "mode": "jev_12",
+      "n": 36,
+      "median_ms": 437.64912558253855,
+      "recall": 0.9027777777777778,
+      "full": 24,
+      "mean_bytes": 9450.694444444445
+    },
+    {
+      "project": "Project B",
+      "mode": "jev_16",
+      "n": 36,
+      "median_ms": 437.64912558253855,
+      "recall": 0.9166666666666666,
+      "full": 27,
+      "mean_bytes": 12514.583333333334
+    },
+    {
+      "project": "Project B",
+      "mode": "jev_12+related",
+      "n": 36,
+      "median_ms": 484.095354040619,
+      "recall": 0.9375,
+      "full": 30,
+      "mean_bytes": 10375.194444444445
+    },
+    {
+      "project": "Project C",
+      "mode": "local_12",
+      "n": 36,
+      "median_ms": 119.78658300358802,
+      "recall": 0.7916666666666666,
+      "full": 21,
+      "mean_bytes": 8126.333333333333
+    },
+    {
+      "project": "Project C",
+      "mode": "local_16",
+      "n": 36,
+      "median_ms": 119.78658300358802,
+      "recall": 0.7916666666666666,
+      "full": 21,
+      "mean_bytes": 10955.416666666666
+    },
+    {
+      "project": "Project C",
+      "mode": "local_12+related",
+      "n": 36,
+      "median_ms": 157.78262494131923,
+      "recall": 0.8333333333333334,
+      "full": 24,
+      "mean_bytes": 8877.416666666666
+    },
+    {
+      "project": "Project C",
+      "mode": "jev_12",
+      "n": 36,
+      "median_ms": 460.31435392796993,
+      "recall": 0.9513888888888888,
+      "full": 30,
+      "mean_bytes": 9495.111111111111
+    },
+    {
+      "project": "Project C",
+      "mode": "jev_16",
+      "n": 36,
+      "median_ms": 460.31435392796993,
+      "recall": 0.9513888888888888,
+      "full": 30,
+      "mean_bytes": 12564.111111111111
+    },
+    {
+      "project": "Project C",
+      "mode": "jev_12+related",
+      "n": 36,
+      "median_ms": 519.6719375671819,
+      "recall": 0.9513888888888888,
+      "full": 30,
+      "mean_bytes": 10416.361111111111
+    },
+    {
+      "project": "Project A",
+      "mode": "local_12",
+      "n": 60,
+      "median_ms": 229.34716701274738,
+      "recall": 0.7933333333333333,
+      "full": 39,
+      "mean_bytes": 7937.05
+    },
+    {
+      "project": "Project A",
+      "mode": "local_16",
+      "n": 60,
+      "median_ms": 229.34716701274738,
+      "recall": 0.845,
+      "full": 42,
+      "mean_bytes": 10856.15
+    },
+    {
+      "project": "Project A",
+      "mode": "local_12+related",
+      "n": 60,
+      "median_ms": 284.428812621627,
+      "recall": 0.8133333333333334,
+      "full": 39,
+      "mean_bytes": 8740.35
+    },
+    {
+      "project": "Project A",
+      "mode": "jev_12",
+      "n": 60,
+      "median_ms": 597.8016875451431,
+      "recall": 0.9508333333333333,
+      "full": 52,
+      "mean_bytes": 9570.95
+    },
+    {
+      "project": "Project A",
+      "mode": "jev_16",
+      "n": 60,
+      "median_ms": 597.8016875451431,
+      "recall": 0.9675,
+      "full": 54,
+      "mean_bytes": 12623.283333333333
+    },
+    {
+      "project": "Project A",
+      "mode": "jev_12+related",
+      "n": 60,
+      "median_ms": 664.5789371104911,
+      "recall": 0.9775,
+      "full": 54,
+      "mean_bytes": 10427.916666666666
+    },
+    {
+      "project": "All",
+      "mode": "local_12",
+      "n": 132,
+      "median_ms": 129.3191874283366,
+      "recall": 0.7393939393939394,
+      "full": 75,
+      "mean_bytes": 7974.159090909091
+    },
+    {
+      "project": "All",
+      "mode": "local_16",
+      "n": 132,
+      "median_ms": 129.3191874283366,
+      "recall": 0.8367424242424243,
+      "full": 87,
+      "mean_bytes": 10920.568181818182
+    },
+    {
+      "project": "All",
+      "mode": "local_12+related",
+      "n": 132,
+      "median_ms": 170.2873749891296,
+      "recall": 0.7598484848484849,
+      "full": 78,
+      "mean_bytes": 8726.318181818182
+    },
+    {
+      "project": "All",
+      "mode": "jev_12",
+      "n": 132,
+      "median_ms": 517.8795420797542,
+      "recall": 0.9378787878787879,
+      "full": 106,
+      "mean_bytes": 9517.469696969696
+    },
+    {
+      "project": "All",
+      "mode": "jev_16",
+      "n": 132,
+      "median_ms": 517.8795420797542,
+      "recall": 0.9492424242424242,
+      "full": 111,
+      "mean_bytes": 12577.5
+    },
+    {
+      "project": "All",
+      "mode": "jev_12+related",
+      "n": 132,
+      "median_ms": 561.3253120682202,
+      "recall": 0.959469696969697,
+      "full": 114,
+      "mean_bytes": 10410.386363636364
+    }
+  ],
+  "retrieval_44_jev": {
+    "calls": 132,
+    "successful": 132,
+    "cost": 0.049433454
+  },
+  "instructed_luna_agents": [
+    {
+      "role": "a",
+      "finished": true,
+      "elapsed_s": 107.88153386116028,
+      "tool_work_s": 0.3104422092437744,
+      "calls": 38,
+      "bytes": 99826,
+      "query_calls": 0,
+      "jev_successful": 0,
+      "jev_cost": 0,
+      "accuracy": 0.8571428571428571,
+      "token_proxy": 24956.5,
+      "context_savings": 0.0,
+      "score": 88.57826188997426
+    },
+    {
+      "role": "b",
+      "finished": true,
+      "elapsed_s": 112.92572498321533,
+      "tool_work_s": 1.8525826930999756,
+      "calls": 30,
+      "bytes": 80857,
+      "query_calls": 7,
+      "jev_successful": 0,
+      "jev_cost": 0,
+      "accuracy": 0.8928571428571429,
+      "token_proxy": 20214.25,
+      "context_savings": 0.19002063590647722,
+      "score": 92.45472307256975
+    },
+    {
+      "role": "c",
+      "finished": true,
+      "elapsed_s": 229.76772809028625,
+      "tool_work_s": 4.627980709075928,
+      "calls": 65,
+      "bytes": 377414,
+      "query_calls": 7,
+      "jev_successful": 7,
+      "jev_cost": 0.002644488,
+      "accuracy": 0.9464285714285714,
+      "token_proxy": 94353.5,
+      "context_savings": -2.7807184501031794,
+      "score": 71.73741505195873
+    }
+  ],
+  "instructed_luna_criteria": {
+    "a": {
+      "criteria": [
+        [
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          0.5,
+          1,
+          1,
+          1
+        ],
+        [
+          0.5,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ]
+      ],
+      "points": 24.0,
+      "accuracy": 0.8571428571428571
+    },
+    "b": {
+      "criteria": [
+        [
+          1,
+          1,
+          1,
+          0.5
+        ],
+        [
+          0.5,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          0.5,
+          1,
+          0.5,
+          1
+        ],
+        [
+          0.5,
+          1,
+          1,
+          1
+        ]
+      ],
+      "points": 25.0,
+      "accuracy": 0.8928571428571429
+    },
+    "c": {
+      "criteria": [
+        [
+          1,
+          1,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ]
+      ],
+      "points": 26.5,
+      "accuracy": 0.9464285714285714
+    }
+  },
+  "followup_evaluation": {
+    "excluded": [
+      "H6"
+    ],
+    "groups": [
+      {
+        "group": "development",
+        "mode": "jev16",
+        "n": 132,
+        "recall": 0.9492424242424242,
+        "median_ms": 507.4133749003522,
+        "mean_bytes": 12571.69696969697,
+        "full": 111
+      },
+      {
+        "group": "development",
+        "mode": "jev18",
+        "n": 132,
+        "recall": 0.9549242424242425,
+        "median_ms": 507.4133749003522,
+        "mean_bytes": 14125.136363636364,
+        "full": 114
+      },
+      {
+        "group": "development",
+        "mode": "native_related",
+        "n": 132,
+        "recall": 0.959469696969697,
+        "median_ms": 575.2367925015278,
+        "mean_bytes": 10367.14393939394,
+        "full": 114
+      },
+      {
+        "group": "development",
+        "mode": "fast_followup",
+        "n": 132,
+        "recall": 0.9943181818181818,
+        "median_ms": 609.0611243853346,
+        "mean_bytes": 10844.825757575758,
+        "full": 129
+      },
+      {
+        "group": "holdout",
+        "mode": "jev16",
+        "n": 24,
+        "recall": 0.79375,
+        "median_ms": 513.540978950914,
+        "mean_bytes": 13137.916666666666,
+        "full": 9
+      },
+      {
+        "group": "holdout",
+        "mode": "jev18",
+        "n": 24,
+        "recall": 0.79375,
+        "median_ms": 513.540978950914,
+        "mean_bytes": 14650.25,
+        "full": 9
+      },
+      {
+        "group": "holdout",
+        "mode": "native_related",
+        "n": 24,
+        "recall": 0.7645833333333334,
+        "median_ms": 563.9393329620361,
+        "mean_bytes": 10587.333333333334,
+        "full": 8
+      },
+      {
+        "group": "holdout",
+        "mode": "fast_followup",
+        "n": 24,
+        "recall": 0.8104166666666667,
+        "median_ms": 577.918270486407,
+        "mean_bytes": 11069.416666666666,
+        "full": 11
+      },
+      {
+        "group": "all",
+        "mode": "jev16",
+        "n": 156,
+        "recall": 0.9253205128205129,
+        "median_ms": 508.9591664727777,
+        "mean_bytes": 12658.807692307691,
+        "full": 120
+      },
+      {
+        "group": "all",
+        "mode": "jev18",
+        "n": 156,
+        "recall": 0.9301282051282052,
+        "median_ms": 508.9591664727777,
+        "mean_bytes": 14205.923076923076,
+        "full": 123
+      },
+      {
+        "group": "all",
+        "mode": "native_related",
+        "n": 156,
+        "recall": 0.9294871794871795,
+        "median_ms": 574.3925004499033,
+        "mean_bytes": 10401.01923076923,
+        "full": 122
+      },
+      {
+        "group": "all",
+        "mode": "fast_followup",
+        "n": 156,
+        "recall": 0.966025641025641,
+        "median_ms": 606.7145204287954,
+        "mean_bytes": 10879.378205128205,
+        "full": 140
+      }
+    ],
+    "followup": {
+      "median_ms": 23.98520801216364,
+      "p95_ms": 58.25379095040262,
+      "max_ms": 164.52162503264844,
+      "startup": [
+        {
+          "project": "Project A",
+          "followup_init_ms": 9.611707995645702
+        },
+        {
+          "project": "Project B",
+          "followup_init_ms": 11.339375050738454
+        },
+        {
+          "project": "Project C",
+          "followup_init_ms": 72.46937497984618
+        }
+      ]
+    },
+    "jev": {
+      "calls": 159,
+      "successful": 159,
+      "cost": 0.060049584
+    },
+    "references_unchanged": true,
+    "holdout_cases": [
+      {
+        "id": "H1",
+        "modes": {
+          "jev16": 0.8,
+          "jev18": 0.8,
+          "native_related": 0.8,
+          "fast_followup": 0.8
+        }
+      },
+      {
+        "id": "H2",
+        "modes": {
+          "jev16": 0.5,
+          "jev18": 0.5,
+          "native_related": 0.5,
+          "fast_followup": 0.5
+        }
+      },
+      {
+        "id": "H3",
+        "modes": {
+          "jev16": 0.5,
+          "jev18": 0.5,
+          "native_related": 0.5,
+          "fast_followup": 0.5
+        }
+      },
+      {
+        "id": "H4",
+        "modes": {
+          "jev16": 0.75,
+          "jev18": 0.75,
+          "native_related": 0.5833333333333334,
+          "fast_followup": 0.75
+        }
+      },
+      {
+        "id": "H5",
+        "modes": {
+          "jev16": 1.0,
+          "jev18": 1.0,
+          "native_related": 1.0,
+          "fast_followup": 1.0
+        }
+      },
+      {
+        "id": "H7",
+        "modes": {
+          "jev16": 0.8,
+          "jev18": 0.8,
+          "native_related": 0.8,
+          "fast_followup": 1.0
+        }
+      },
+      {
+        "id": "H8",
+        "modes": {
+          "jev16": 1.0,
+          "jev18": 1.0,
+          "native_related": 0.9333333333333333,
+          "fast_followup": 0.9333333333333333
+        }
+      },
+      {
+        "id": "H9",
+        "modes": {
+          "jev16": 1.0,
+          "jev18": 1.0,
+          "native_related": 1.0,
+          "fast_followup": 1.0
+        }
+      }
+    ]
+  },
+  "final_luna_agents": [
+    {
+      "role": "p",
+      "finished": true,
+      "elapsed_s": 134.22658514976501,
+      "tool_s": 0.34115147590637207,
+      "runner_calls": 6,
+      "retrieval_actions": 40,
+      "output_bytes": 100323,
+      "token_proxy": 25080.75,
+      "jev_calls": 0,
+      "jev_success": 0,
+      "jev_cost": 0,
+      "accuracy": 0.7857142857142857,
+      "score": 87.14285714285714,
+      "context_savings": 0.0
+    },
+    {
+      "role": "h",
+      "finished": true,
+      "elapsed_s": 196.04029607772827,
+      "tool_s": 6.869755268096924,
+      "runner_calls": 8,
+      "retrieval_actions": 69,
+      "output_bytes": 155975,
+      "token_proxy": 38993.75,
+      "jev_calls": 8,
+      "jev_success": 8,
+      "jev_cost": 0.00298914,
+      "accuracy": 0.8035714285714286,
+      "score": 74.97949290850286,
+      "context_savings": -0.5547282278241281
+    }
+  ],
+  "final_luna_criteria": {
+    "p": {
+      "criteria": [
+        [
+          1,
+          0.5,
+          1,
+          1
+        ],
+        [
+          0.5,
+          1,
+          0,
+          1
+        ],
+        [
+          0.5,
+          0,
+          1,
+          0.5
+        ],
+        [
+          0.5,
+          1,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0
+        ]
+      ],
+      "points": 22.0,
+      "accuracy": 0.7857142857142857
+    },
+    "h": {
+      "criteria": [
+        [
+          1,
+          1,
+          1,
+          0
+        ],
+        [
+          1,
+          0.5,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ],
+        [
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          0.5,
+          0,
+          0.5,
+          1
+        ],
+        [
+          1,
+          1,
+          1,
+          0.5
+        ]
+      ],
+      "points": 22.5,
+      "accuracy": 0.8035714285714286
+    }
+  },
+  "final_speed_target_achieved": false,
+  "shipped_status": "Native vector cache and opt-in related_files are shipped; standalone Jev and fast-followup adapters remain external experiments."
+}

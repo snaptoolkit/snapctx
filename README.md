@@ -8,7 +8,7 @@
 
 **Structured codebase context for AI agents.** One CLI call replaces the agent's usual `grep` + `read` + chase-imports loop. Ask a natural-language question; get back a self-contained pack of top symbols, their source, callees, callers, and module-level docstrings.
 
-**Real-world agent usage (vs. default `grep`/`read`/`glob` tools):**
+**Earlier agent-usage study (setup-specific; vs. default `grep`/`read`/`glob` tools):**
 
 | | Regular tools | snapctx | Win |
 |---|---|---|---|
@@ -20,7 +20,7 @@
 | Files accessed | 6 full reads | **4 ranked symbols** | targeted |
 | Query mode | sequential | **parallel** | concurrent fan-out |
 
-[See the controlled benchmark](#tool-benchmark) for per-query breakdowns. These figures describe that setup; the later [retrieval experiments](#retrieval-experiments) include contrasting agent results, skeleton approaches, and validation across three anonymized projects.
+[See the controlled benchmark](#tool-benchmark) for per-query breakdowns. These figures describe that setup. The later [retrieval experiments](#retrieval-experiments) found faster native lookups and better file discovery, but the [final fresh-Luna attempt](#11-final-attempt-to-beat-ordinary-search-agent-time) did **not** beat ordinary-search completion time.
 
 Languages today: Python, TypeScript, TSX, JSX, shell (`.sh`/`.bash`), Markdown, TOML, YAML, JSON, and `.env` files. Code is parsed structurally (symbols, calls, imports); docs and configs index headings / top-level keys so an agent can find them without grep. The parser layer is pluggable — adding a language is a single new file.
 
@@ -166,7 +166,7 @@ Study dates: 2026-09-26–2026-09-28.
 
 This study compared ordinary source search, Graphify, Snapctx's read interfaces, skeleton-guided exploration, and Jev ranking through OpenRouter. It then optimized a **standalone experimental retriever** combining Snapctx, live ripgrep, and one Jev request. The worker described below is an external prototype: these results do **not** mean it is shipped in Snapctx, registered as an MCP tool, or enabled in an agent's configuration.
 
-**Latest result:** 38 questions across three anonymized projects, run twice after stabilization. Reference-file coverage was **93.3–97.5%**, with **441–623 ms warm median latency**, approximately **9.7–10.0 kB returned per question**, and **$0.00037–$0.00038 Jev cost per question**. No previously retrieved reference file was lost in the final comparison. Six questions still required follow-up. These are retrieval measurements, not a new end-to-end agent accuracy or billing result.
+**Latest results:** native vector reuse preserved all 264 default outputs and reduced warm search latency by 37–57% in the refreshed comparison. An external missing-file follow-up reached **96.60% reference-file recall across 52 valid scenarios**, versus 92.95% before that follow-up, at **607 vs 574 ms warm median latency**. Independent new-scenario recall was **81.04%**, not the 99.43% development result. The final fresh-Luna assisted workflow took **196.0 seconds versus 134.2 seconds for ordinary search**, with 55.5% more emitted context: **the end-to-end speed target was not achieved**. Retrieval recall, answer grades, emitted-context estimates, and billing are distinct measurements; details and limitations follow.
 
 ### Scope, scenarios, and measurement
 
@@ -221,7 +221,7 @@ Three agents received the same seven questions, with no access to commit history
 
 The historical score was `60 × accuracy + 25 × (52 / elapsed_seconds) + 15 × (6250 / context_proxy)`. Accuracy was based on completeness of the cited mechanism, with partial credit for missing parts. The context estimates came from mixed-quality agent reports and truncated tool outputs; they are not comparable billing records. Large result dumps and provider retries inflated assisted-agent context. Follow-up troubleshooting was excluded from initial accuracy.
 
-**The assisted agents did not save context or time in this run.** This is not a clean successful-Jev-versus-local ablation, and later retrieval improvements were not followed by another equivalent three-agent evaluation. Do not reuse these scores as scores for the stabilized worker.
+**The assisted agents did not save context or time in this run.** This is not a clean successful-Jev-versus-local ablation, and no equivalent successful-provider rerun had happened at this stage. The later instructed cohort is reported separately below; do not reuse these historical scores for the stabilized worker.
 
 ### 3. Native read interfaces and initial rankers
 
@@ -381,7 +381,7 @@ The default limit is **0**, preserving existing context output. Allowed limits a
 
 #### Native evaluation: 44 questions, three repetitions
 
-The existing 38 questions were supplemented with six additional source-verified scenarios covering session identity, multipart-upload cleanup, export quality checks, provider-client construction, shared pronunciation caches, and localized section boundaries. Each revision ran in a separate process against the same existing indexes. The baseline was commit `6fcc6c5`; warmup was excluded. There were **264 baseline calls** (search and context) and **396 candidate calls** (search, context, and optional follow-up).
+The existing 38 questions were supplemented with six additional source-verified scenarios covering session identity, multipart-upload cleanup, export quality checks, provider-client construction, shared derived-data caches, and localized section boundaries. Each revision ran in a separate process against the same existing indexes. The baseline was commit `6fcc6c5`; warmup was excluded. There were **264 baseline calls** (search and context) and **396 candidate calls** (search, context, and optional follow-up).
 
 | Corpus | Questions | Native search median, before → after | Default context median, before → after | Default context coverage → with follow-up | Follow-up context median |
 |---|---:|---:|---:|---:|---:|
@@ -401,17 +401,137 @@ Regression checks cover cache reuse, committed writes, deletion, empty indexes, 
 
 A reusable [benchmark runner](benchmarks/native_retrieval.py) accepts an external scenario manifest; the [anonymized result summary](benchmarks/native-results-2026-09-28.json) records aggregate metrics. Run both revisions with the same Python environment, source snapshots, and refreshed indexes; add `--related` only for the new revision. Private manifests and source paths are intentionally not included.
 
+### 8. Refreshed native and candidate rerun
+
+Later runs excluded Graphify and tested native revision `d777dbe`. Source had changed since the earlier study, so indexes were refreshed first; historical before/after figures are not a controlled attribution to the tool change. Native baseline `6fcc6c5` and the current implementation were rerun against the same refreshed indexes, with three repetitions of 44 questions (20/12/12 across A/B/C). Indexing and warmup are excluded.
+
+| Corpus | Search median, baseline → current | Context median, baseline → current | Native context coverage, default → related |
+|---|---:|---:|---:|
+| Project A | 46.8 → **20.2 ms** | 52.1 → **22.5 ms** | 56.33% → **66.25%** |
+| Project B | 12.1 → **7.6 ms** | 15.0 → **10.4 ms** | 39.58% → **39.58%** |
+| Project C | 45.6 → **22.7 ms** | 47.7 → **24.3 ms** | 68.06% → **77.78%** |
+
+Again, **264/264 default payload hashes matched**. Search was 37–57% faster and context 31–57% faster, without a default-output reduction. Optional related files preserved all previously present reference files in 132 comparisons. This confirms the native cache result on the refreshed corpus; the native coverage measure still differs from candidate-list recall.
+
+The separate standalone worker made 132 broad queries: 44 questions × three repetitions. Each generated one candidate pool and one Jev response; 12/16/dependency variants shared that response. Local ordering used the existing symbol-first pool followed by infrastructure, template, and live-text candidates, not a newly optimized local reranker.
+
+| Candidate policy | Mean reference-file recall | Warm median | Mean result bytes | Fully covered case-runs / 132 |
+|---|---:|---:|---:|---:|
+| Local 12 | 73.94% | 129 ms | 7,974 | 75 |
+| Local 16 | 83.67% | 129 ms | 10,921 | 87 |
+| Local 12 + up to 4 related | 75.98% | 170 ms | 8,726 | 78 |
+| Jev 12 | 93.79% | 518 ms | 9,517 | 106 |
+| Jev 16 | 94.92% | 518 ms | 12,578 | 111 |
+| Jev 12 + up to 4 related | **95.95%** | 561 ms | 10,410 | **114** |
+
+| Corpus | Local 12 | Local 16 | Local 12 + related | Jev 12 | Jev 16 | Jev 12 + related |
+|---|---:|---:|---:|---:|---:|---:|
+| Project A | 79.33% | 84.50% | 81.33% | 95.08% | 96.75% | 97.75% |
+| Project B | 59.72% | 86.81% | 59.72% | 90.28% | 91.67% | 93.75% |
+| Project C | 79.17% | 79.17% | 83.33% | 95.14% | 95.14% | 95.14% |
+
+At the same maximum 16-file budget, the related variant beat Jev 16 on mean recall and used 17.2% fewer result bytes, at higher latency. Related entries are evidence-bearing pointers, not full source excerpts. Native symbol names were taken from retrieved candidates; synthetic text hits were mapped to the smallest enclosing indexed symbol when possible. No reference paths were provided to retrieval.
+
+All 132 Jev calls succeeded, costing **$0.049433454 total**, approximately **$0.00037450 per broad query**. Reference-file hashes were unchanged during the candidate run. Remaining misses involved shared request wrappers, parent route registrations, navigation callers, throttle definitions, and reused services. Three repeats do not establish a production latency distribution.
+
+### 9. Fresh Luna agents with usage instructions
+
+Three fresh `gpt-6-luna` agents received the same seven questions, current-source access, concise answer requirements, and method-specific instructions. They were blind to reference sets, previous answers, and one another's output. Graphify was excluded. The two Snapctx conditions had warm workers and were instructed to begin each question with one candidate query, inspect bounded source ranges, use local follow-ups selectively, and stop once the requested mechanisms were supported.
+
+The initial Unix-socket transport failed under agent sandbox permissions. Experiment-only file mailboxes replaced it, and one agent additionally needed mailbox write permission. Failures happened before measured retrieval; successful starts were staggered despite parallel dispatch. These are not perfectly synchronized runs.
+
+Elapsed time is first successful measured invocation through final answer persistence, excluding setup, guide reading, and preparation before the first invocation. Context is emitted UTF-8 bytes divided by four, excluding prompts, hidden reasoning, and final answers. Accuracy/completeness is manual source review: implementation entry points, mechanism, integration, and edge cases, each scored 0/0.5/1 per question, for 28 points total. The general rubric preceded the runs; its question-specific checklist was elaborated during review. Grading was not blinded.
+
+The relative score is `60 × accuracy + 25 × fastest_time / time + 15 × smallest_context / context`. Scores are cohort-relative, not universal tool ratings; these grades are not directly interchangeable with the earlier coarse seven-answer grades.
+
+| Workflow | Accuracy / completeness | Elapsed | Retrieval token estimate | Context saving vs ordinary search | Score / 100 |
+|---|---:|---:|---:|---:|---:|
+| Ordinary search | 85.7% | **107.9 s** | 24,957 | Baseline | 88.6 |
+| Snapctx + live search, local ordering | 89.3% | 112.9 s | **20,214** | **19.0%** | **92.5** |
+| Snapctx + live search + Jev | **94.6%** | 229.8 s | 94,354 | −278.1% | 71.7 |
+
+The local Snapctx condition had the best weighted score, taking 4.7% longer while returning 19% less context. The Jev agent obtained more complete answers but repeatedly issued whole-file reads despite its instructions and repeated six commands. It used no native `source`, `expand`, or `related_files` follow-up. Its seven queries emitted 37,898 bytes; subsequent reads emitted 339,516 bytes. The local agent emitted 33,831 candidate bytes and 47,026 read bytes.
+
+Measured tool durations totalled **0.31 / 1.85 / 4.63 seconds** for ordinary/local/Jev conditions. The Jev queries themselves took **4.42 seconds**; the remaining roughly 225 seconds occurred outside measured retrieval calls. These logs cannot separate reasoning, generation, scheduling, and orchestration overhead. Seven Jev calls cost **$0.002644488** and all succeeded. A separate setup probe cost $0.00037233.
+
+This run measures agent behavior as well as retrieval. Instructions alone did not ensure efficient source use, and one sample per condition does not establish that Jev causes an agent slowdown. The subsequent missing-file prototype below was not used in these three agent runs.
+
+### 10. Fast follow-up for missing files
+
+The next external prototype accepted the existing Jev 12 + native-related file list and appended **at most two** locally resolved file pointers. It followed direct imports and selected reverse imports into route-registration and UI-page files, ranked using the question, imported identifier, and nearby source. It checked current source hashes and root boundaries. No benchmark identifiers or reference paths were hardcoded, no previous result was evicted, and the follow-up made **no additional Jev request**.
+
+| Follow-up experiment on the original 44 questions | Mean recall | Median added time | Decision |
+|---|---:|---:|---|
+| Broad forward/reverse import scan | 95.95% | 167 ms | Rejected: no recovered references |
+| Narrow route/UI callers + nearby import-usage ranking | 99.43% | 104 ms | Useful ranking, excessive repeated scanning |
+| Same narrow rule + cached source tokens and identifier locations | 99.43% | **24 ms** | Frozen for independent evaluation |
+
+This prototype caches source-derived metadata in a persistent worker, unlike the earlier standalone worker's model/HTTP-only reuse. The experimental index snapshot is fixed for that worker's lifetime; production cache bounds and index/config freshness remain integration work. A pointer is not proof of a complete behavioral explanation, and a structurally related file may still be irrelevant to the question.
+
+A fresh Luna agent independently authored nine additional scenarios, without seeing known failures or retrieval results. The algorithm was frozen before those questions/results were inspected. Source audit corrected several assumed caller chains and expanded platform-specific references; one question incorrectly assumed a request field existed and was excluded. Query text stayed unchanged, and final scoring used eight valid, audited scenarios. Some require five or six files. The audit author remained blind to retrieval scores.
+
+The fresh comparison made **159 ranking calls** (53 scenarios × three repeats), with **156 scored case-runs** after the exclusion. Each ranking response fed all four policies. The original 44 scenarios are development data; the eight new scenarios are the independent check.
+
+| Set | Policy | Mean recall | Warm median | Mean result bytes | Fully covered case-runs |
+|---|---|---:|---:|---:|---:|
+| Original 44 | Jev 16 | 94.92% | 507 ms | 12,572 | 111/132 |
+| Original 44 | Jev 18 | 95.49% | 507 ms | 14,125 | 114/132 |
+| Original 44 | Jev 12 + native related | 95.95% | 575 ms | 10,367 | 114/132 |
+| Original 44 | Previous policy + fast follow-up | **99.43%** | 609 ms | 10,845 | **129/132** |
+| New 8 | Jev 16 | 79.38% | 514 ms | 13,138 | 9/24 |
+| New 8 | Jev 18 | 79.38% | 514 ms | 14,650 | 9/24 |
+| New 8 | Jev 12 + native related | 76.46% | 564 ms | 10,587 | 8/24 |
+| New 8 | Previous policy + fast follow-up | **81.04%** | 578 ms | 11,069 | **11/24** |
+| All 52 | Jev 16 | 92.53% | 509 ms | 12,659 | 120/156 |
+| All 52 | Jev 18 | 93.01% | 509 ms | 14,206 | 123/156 |
+| All 52 | Jev 12 + native related | 92.95% | 574 ms | 10,401 | 122/156 |
+| All 52 | Previous policy + fast follow-up | **96.60%** | 607 ms | 10,879 | **140/156** |
+
+Relative to the native-related policy, the added follow-up improved mean recall by 3.65 percentage points for approximately **5.6% more median latency** and **478 additional bytes** per query (~120 token-equivalents). At the same maximum 18-file budget, it beat simply returning Jev 18 and used 23.4% fewer result bytes, but took longer. The maximum output budget grew from 16 to 18 files; the same-budget comparison is important.
+
+The follow-up itself added **24 ms median**, **58 ms 95th percentile**, and **165 ms maximum** across scored runs. Metadata initialization took approximately 10/11/72 ms across the three corpora and is excluded from warm timings. All 159 Jev calls succeeded, costing **$0.060049584** for the comparison; local follow-up had no extra ranking charge. No baseline path was dropped in any run, and the original reference-file hashes stayed unchanged. Final audited references were separately source-checked.
+
+**The 99.43% development figure is not a general completeness guarantee:** independent recall was 81.04%, with persistent Flutter/Dart and dependency-injection gaps. One new case favored plain Jev 18 over the follow-up policy. Always-on expansion is what was measured; triggering it only for an unresolved relationship is a recommendation, not a measured equivalent. Returned bytes exclude response metadata and largely contain pointers/excerpts, not all source an agent might subsequently read.
+
+### 11. Final attempt to beat ordinary-search agent time
+
+A final pair of fresh `gpt-6-luna` agents used the same seven questions and a common batch search/read interface. The interface capped reads at 80 lines, bounded response sizes, and suppressed duplicate searches and repeated source lines. Both agents passed an IPC readiness check and waited for GO before retrieving source. The Snapctx condition used Jev, native related files, the frozen two-pointer follow-up, and automatically selected live source windows for the top four candidates. This was a combined workflow test, not a ranking-only ablation.
+
+The index check found **zero stale entries among 2,041 checked non-environment files**. Indexed-worker warmup was 0.81 seconds, excluded. Both agents were blind to previous answers and reference files, received the same concise answer format, and received no mid-run coaching. The success criterion was lower elapsed time than the fresh baseline with no lower accuracy/completeness score; the earlier 107.9-second baseline was also recorded as a historical target.
+
+| Final workflow | Elapsed | Accuracy / completeness | Context token estimate | Context saving vs baseline | Score / 100 |
+|---|---:|---:|---:|---:|---:|
+| Ordinary search with batching/bounded reads | **134.2 s** | 78.6% | **25,081** | Baseline | **87.1** |
+| Snapctx + Jev + follow-ups + automatic source windows | 196.0 s | **80.4%** | 38,994 | −55.5% | 75.0 |
+
+| Execution detail | Ordinary search | Assisted workflow |
+|---|---:|---:|
+| Measured runner calls, excluding final submission | 6 | 8 |
+| Retrieval actions within those batches | 40 | 69 |
+| Total measured tool time | 0.34 s | 6.87 s |
+| Emitted retrieval bytes | 100,323 | 155,975 |
+| Jev calls / successful calls | 0 / 0 | 8 / 8 |
+| Jev cost | $0 | $0.002989140 |
+
+**The final attempt did not beat ordinary search:** it was 46.1% slower than the contemporary baseline and also missed the historical 107.9-second target. Batching, deduplication, source-window enrichment, and explicit efficiency guidance did not solve the agent-level overhead. The first seven assisted fetches returned 53,530 bytes in 5.8 seconds; the agent still performed many further reads/searches and one additional ranking request. Faster subsecond retrieval did not translate into faster completion.
+
+Manual review found omissions in both final answers. The ordinary-search answer confused frontend caching with the requested backend rate-limit split and omitted part of the backend read path. The assisted answer correctly described that rate-limit mechanism but omitted some cache-busting and UI-filter details and incorrectly included a navigation artifact in the reading spine. Valid alternative runtime implementations received credit. Accuracy is the same unblinded 28-point rubric used above, not an automated factuality score or exhaustive file-recall grade.
+
+The first agent cohort and final pair each contain only one sample per condition, use different output policies, and show baseline variation. Do not interpret changes between cohorts as a causal model or tool effect. In particular, lower context than the previous inefficient Jev agent is not a saving versus the final ordinary-search baseline.
+
+The [anonymized aggregate results](benchmarks/retrieval-results-2026-09-28.json) retain cohort metrics, per-question criterion scores, native comparisons, and retrieval/follow-up summaries. They omit private project names, paths, prompts, source excerpts, and answer artifacts. Full private traces and experimental adapters are not distributed; exact replication still requires matching corpora, snapshots, prompts, runtime settings, and provider behavior.
+
 ### Recommended retrieval workflow and limits
 
 1. **Known identifier, route, header, or literal:** start with scoped `find` or `rg -F -l`; read selected qnames with `source`, and use `expand` for callers/callees. This avoids a ranking API call.
-2. **Broad question:** the strongest measured prototype used a bounded hybrid/live candidate pool, one Jev rank, and 12 compact paths. Keep its JSONL process alive for repeated queries; maintain index freshness separately.
+2. **Broad question:** a bounded hybrid/live candidate pool with one Jev rank improved file discovery. Optional native dependencies and the external two-pointer follow-up improved coverage further. Keep the worker warm and verify missing relationships locally; these gains did not establish a faster end-to-end agent workflow.
 3. **Incremental deepening:** inspect the selected implementation and follow exact imports, constants, routes, and callers locally. Use another model-ranking stage only when the missing component cannot be resolved that way.
 4. **Orientation:** scope `map` or `outline` to a relevant subtree/file. A full skeleton was too large and incomplete for routine preload in this study.
-5. **Alternative graph discovery:** Graphify remains an option when relevant areas are absent from the candidate pool. It won the initial seven-question comparison but lost to the revised retriever on the broader corpus; neither result proves a universal ranking.
+5. **Agent execution:** default to the narrowest useful evidence. Batching, deduplication, and automatic source windows are not sufficient by themselves; the final agent trial still lost on time and context size. Use additional retrieval when it closes an observed gap, and verify the answer against source.
 
 Jev ranking sends bounded candidate excerpts to OpenRouter. Local-only retrieval has no Jev charge and avoids that source transfer. Native Snapctx and the external Jev experiment have different network behavior.
 
-The measured gains are file coverage and retrieval latency. Output reduction is not an established overall token or dollar saving, and no new end-to-end agent score was measured after stabilization. The private corpora and raw traces are not distributed in this repository; the tables document observed results, while exact independent reproduction requires equivalent source snapshots, question/reference sets, tool versions, and provider settings. The experiment did not change application code or enable the standalone worker in Codex/MCP.
+The measured native gains are file coverage and retrieval latency. Later agent cohorts are reported above, including the failed final speed target. Output reduction is not an established overall token or dollar saving, and no statistically robust agent-time advantage was established. The private corpora and raw traces are not distributed in this repository; the tables document observed results, while exact independent reproduction requires equivalent source snapshots, question/reference sets, tool versions, and provider settings. The experiment did not change application code or enable the standalone worker in Codex/MCP.
 
 ---
 
@@ -448,7 +568,7 @@ Add `--kind function|method|class|component|constant|interface|type` to any of t
 ## What just works (no setup)
 
 - **Auto-indexing on first query.** Run `snapctx context …` in a fresh repo and it builds the index transparently before answering.
-- **Forgiving qnames.** `source` and `expand` tolerate common LLM paraphrases — keep `.tsx`/`.py` on the module (`components/Verse.tsx:Verse`), apply Python dotted style to a TS file (`components.Verse:Verse`), or vice versa — and the call still resolves. The response includes a `paraphrase_hint` field naming the canonical form so the caller learns it for next time.
+- **Forgiving qnames.** `source` and `expand` tolerate common LLM paraphrases — keep `.tsx`/`.py` on the module (`components/Item.tsx:Item`), apply Python dotted style to a TS file (`components.Item:Item`), or vice versa — and the call still resolves. The response includes a `paraphrase_hint` field naming the canonical form so the caller learns it for next time.
 - **Auto-refresh on every query.** Subsequent runs incrementally re-index files whose SHA changed — usually <200 ms.
 - **No `--root` flag.** snapctx walks up from your current directory to find the nearest `.snapctx/index.db`. Run from a deeply nested file; queries still hit the right index.
 - **Stderr for progress, stdout for JSON.** Pipe stdout to `jq` without it choking on log lines.
@@ -583,7 +703,7 @@ We measured both paths on three real codebases (a Django backend, zustand, and s
 |---|---|---|---:|---:|---:|---:|
 | Django backend | audit  | every Django model field + app | 7 k | 155 k | **22×** | 1 → 14 |
 | Django backend | audit  | every LLM provider call + model + temperature | 10 k | **204 k** | **20×** | 1 → 17 |
-| Django backend | survey | full flow API → views → DB for verse fetch | 14 k | 58 k | 4× | 1 → 11 |
+| Django backend | survey | full flow API → views → DB for record retrieval | 14 k | 58 k | 4× | 1 → 11 |
 | Django backend | survey | every DRF throttle / permission class + where | 7 k | 23 k | 3× | 1 → 11 |
 | zustand | audit  | setState → equality → subscribers + persist | 6 k | 95 k | **17×** | 1 → 18 |
 | zustand | survey | every middleware + state shape | 5 k | 77 k | **15×** | 1 → 11 |
@@ -787,7 +907,7 @@ All operations read from the same SQLite file. They're cheap and composable; `co
 
 We raced lexical / vector / hybrid on real codebases:
 
-**Q1 — focused** (*"what fields does `TranslationVerse` have?"*):
+**Q1 — focused** (*"what fields does `ContentRecord` have?"*):
 
 | Mode | Calls | Tokens | Duration | Accurate? |
 |---|---:|---:|---:|:---:|
@@ -1038,7 +1158,7 @@ pack = context_multi("login session", roots, anchor=Path("."))
   "truncated": false,
   "matches": [
     {
-      "qname": "parser.services:StrongsComparisonService.save_comparison",
+      "qname": "parser.services:ComparisonService.save_comparison",
       "kind": "method",
       "signature": "def save_comparison(self, …)",
       "file": "/abs/path/parser/services.py",
